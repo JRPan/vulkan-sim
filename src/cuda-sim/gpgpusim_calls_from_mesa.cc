@@ -73,6 +73,14 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
             is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
 }
 
+extern "C" void gpgpusim_vkCmdDraw()
+{
+    VulkanRayTracing::invoke_gpgpusim();
+    VulkanRayTracing::vkCmdDraw();
+    // VulkanRayTracing::vkCmdDraw(void *vertex_buffer);
+}
+
+
 extern "C" void gpgpusim_setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type)
 {
     VulkanRayTracing::setDescriptor(setID, descID, address, size, type);

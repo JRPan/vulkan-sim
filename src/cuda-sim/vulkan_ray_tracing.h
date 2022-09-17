@@ -245,6 +245,7 @@ public:
     static void setDescriptorSet(struct anv_descriptor_set *set);
     static void invoke_gpgpusim();
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
+    static void VulkanRayTracing::vkCmdDraw();
     static void vkCmdTraceRaysKHR( // called by vulkan application
                       void *raygen_sbt,
                       void *miss_sbt,

@@ -1234,6 +1234,19 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 const bool writeImageBinary = true;
 
+void VulkanRayTracing::vkCmdDraw() {
+    // Dump Descriptor Sets
+    if (!use_external_launcher) 
+    {
+        dump_descriptor_sets(VulkanRayTracing::descriptorSet);
+        // dump_callparams_and_sbt(raygen_sbt, miss_sbt, hit_sbt, callable_sbt, is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
+
+        // ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
+        // struct anv_vertex_binding *vb = cmd_buffer->state.vertex_bindings;
+    }
+
+}
+
 void VulkanRayTracing::vkCmdTraceRaysKHR(
                       void *raygen_sbt,
                       void *miss_sbt,
