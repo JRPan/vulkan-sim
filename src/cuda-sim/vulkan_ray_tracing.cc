@@ -105,7 +105,7 @@ void* VulkanRayTracing::launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_D
 std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
 bool VulkanRayTracing::dumped = false;
 
-bool use_external_launcher = true;
+bool use_external_launcher = false;
 
 bool VulkanRayTracing::_init_ = false;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
@@ -1157,6 +1157,20 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
             deviceFunction = "";
             assert(0);
             break;
+        case MESA_SHADER_VERTEX:
+            // shader.function_name = "callable_" + std::to_string(shader.ID);
+            strcpy(shader.function_name, "vertex");
+            strcat(shader.function_name, std::to_string(shader.ID).c_str());
+            deviceFunction = "MESA_SHADER_VERTEX";
+            break;
+        case MESA_SHADER_FRAGMENT:
+            // shader.function_name = "callable_" + std::to_string(shader.ID);
+            strcpy(shader.function_name, "frag");
+            strcat(shader.function_name, std::to_string(shader.ID).c_str());
+            deviceFunction = "MESA_SHADER_FRAGMENT";
+            break;
+        default:
+            assert(0);
     }
     deviceFunction += "_func" + std::to_string(shader.ID) + "_main";
     // deviceFunction += "_main";
@@ -1196,24 +1210,6 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
     VulkanRayTracing::shaders.push_back(shader);
 
     return shader.ID;
-
-    // if (itr.find("RAYGEN") != std::string::npos)
-    // {
-    //     printf("############### registering %s\n", shaderPath);
-    //     context->register_function(fat_cubin_handle, "raygen_shader", "MESA_SHADER_RAYGEN_main");
-    // }
-
-    // if (itr.find("MISS") != std::string::npos)
-    // {
-    //     printf("############### registering %s\n", shaderPath);
-    //     context->register_function(fat_cubin_handle, "miss_shader", "MESA_SHADER_MISS_main");
-    // }
-
-    // if (itr.find("CLOSEST") != std::string::npos)
-    // {
-    //     printf("############### registering %s\n", shaderPath);
-    //     context->register_function(fat_cubin_handle, "closest_hit_shader", "MESA_SHADER_CLOSEST_HIT_main");
-    // }
 }
 
 
@@ -1234,7 +1230,15 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 const bool writeImageBinary = true;
 
-void VulkanRayTracing::vkCmdDraw() {
+void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vb) {
+
+    // dump vertex buffer
+    for (unsigned i = 0; i < MAX_VBS; i++) {
+        if (vb[i].buffer) {
+            printf("vb[%u] is used\n",i);
+            dumpVertex(&vb[i],i);
+        }
+    }
     // Dump Descriptor Sets
     if (!use_external_launcher) 
     {
@@ -1243,6 +1247,70 @@ void VulkanRayTracing::vkCmdDraw() {
 
         // ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
         // struct anv_vertex_binding *vb = cmd_buffer->state.vertex_bindings;
+    }
+    if(writeImageBinary && !imageFile.is_open())
+    {
+        char* imageFileName;
+        char defaultFileName[40] = "image.binary";
+        if(getenv("VULKAN_IMAGE_FILE_NAME"))
+            imageFileName = getenv("VULKAN_IMAGE_FILE_NAME");
+        else
+            imageFileName = defaultFileName;
+        imageFile.open(imageFileName, std::ios::out | std::ios::binary);
+        
+        // imageFile.open("image.txt", std::ios::out);
+    }
+    else
+        return;
+
+    struct anv_descriptor desc;
+    desc.image_view = NULL;
+
+    gpgpu_context *ctx;
+    ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+
+    // unsigned long shaderId = *(uint64_t*)raygen_sbt;
+    // int index = 0;
+    // for (int i = 0; i < shaders.size(); i++) {
+    //     if (shaders[i].ID == 0){
+    //         index = i;
+    //         break;
+    //     }
+    // }
+    ctx->func_sim->g_total_shaders = shaders.size();
+
+    shader_stage_info shader = shaders[0];
+    function_info *entry = context->get_kernel(shader.function_name);
+
+    unsigned n_return = entry->has_return();
+    unsigned n_args = entry->num_args();
+    //unsigned n_operands = pI->get_num_operands();
+
+    // launch_width = 1;
+    // launch_height = 1;
+
+    dim3 blockDim = dim3(1, 1, 1);
+    dim3 gridDim = dim3(1, 1, 1);
+
+    gpgpu_ptx_sim_arg_list_t args;
+    // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+    //   raygen_shader.function_name, args, dim3(4, 128, 1), dim3(32, 1, 1), context);
+    kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+      shader.function_name, args, gridDim, blockDim, context);
+    
+    struct CUstream_st *stream = 0;
+    stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
+    ctx->the_gpgpusim->g_stream_manager->push(op);
+
+    //printf("%d\n", descriptors[0][1].address);
+
+    fflush(stdout);
+
+    while(!op.is_done() && !op.get_kernel()->done()) {
+        printf("waiting for op to finish\n");
+        sleep(1);
+        continue;
     }
 
 }
@@ -1861,7 +1929,46 @@ void VulkanRayTracing::image_store(struct anv_descriptor* desc, uint32_t gl_Laun
 //     thread->RT_thread_data->variable_decleration_table.push_back(entry);
 // }
 
+void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vb, uint32_t setID) {
 
+
+    uint64_t* address = anv_address_map(vb->buffer->address);
+    uint64_t size = vb->buffer->size;
+
+    // Data to dump
+    FILE *fp;
+    char *mesa_root = getenv("MESA_ROOT");
+    char *filePath = "gpgpusimShaders/";
+    // char *extension = ".vkvertexbuffer";
+
+    // Vertex data
+    char fullPath[200];
+    snprintf(fullPath, sizeof(fullPath), "%s%s%d.vkvertexdata", mesa_root, filePath, setID);
+    // File name format: setID_descID.vktexturedata
+
+    fp = fopen(fullPath, "wb+");
+    fwrite(address, 1, size, fp);
+    fclose(fp);
+
+    // // Texture metadata
+    // snprintf(fullPath, sizeof(fullPath), "%s%s%d.vktexturemetadata", mesa_root, filePath, setID);
+    // fp = fopen(fullPath, "w+");
+    // // File name format: setID_descID.vktexturemetadata
+
+    // fprintf(fp, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", size, 
+    //                                              image_extent_width, 
+    //                                              image_extent_height, 
+    //                                              format, 
+    //                                              VkDescriptorTypeNum, 
+    //                                              image->n_planes, 
+    //                                              image->samples, 
+    //                                              image->tiling, 
+    //                                              image->planes[0].surface.isl.tiling,
+    //                                              image->planes[0].surface.isl.row_pitch_B,
+    //                                              filter);
+    // fclose(fp);
+
+}
 void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t binding, VkDescriptorType type)
 {
     anv_descriptor *desc_offset = ((anv_descriptor*)((void*)desc)); // offset for raytracing_extended
@@ -2172,7 +2279,7 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
 {
    for(int i = 0; i < set->descriptor_count; i++)
    {
-       if(i == 3 || i > 9)
+       if(i == 2)
        {
             // for some reason raytracing_extended skipped binding = 3
             // and somehow they have 34 descriptor sets but only 10 are used
@@ -2257,13 +2364,13 @@ void VulkanRayTracing::dump_AS(struct anv_descriptor_set *set, VkAccelerationStr
 {
    for(int i = 0; i < set->descriptor_count; i++)
    {
-       if(i == 3 || i > 9)
-       {
-            // for some reason raytracing_extended skipped binding = 3
-            // and somehow they have 34 descriptor sets but only 10 are used
-            // so we just skip those
-            continue;
-       }
+    //    if(i == 3 || i > 9)
+    //    {
+    //         // for some reason raytracing_extended skipped binding = 3
+    //         // and somehow they have 34 descriptor sets but only 10 are used
+    //         // so we just skip those
+    //         continue;
+    //    }
 
         struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
 

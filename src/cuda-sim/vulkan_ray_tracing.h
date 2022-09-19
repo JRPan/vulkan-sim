@@ -245,7 +245,7 @@ public:
     static void setDescriptorSet(struct anv_descriptor_set *set);
     static void invoke_gpgpusim();
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
-    static void VulkanRayTracing::vkCmdDraw();
+    static void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vb);
     static void vkCmdTraceRaysKHR( // called by vulkan application
                       void *raygen_sbt,
                       void *miss_sbt,
@@ -274,6 +274,7 @@ public:
     static void dump_descriptor_sets(struct anv_descriptor_set *set);
     static void dump_AS(struct anv_descriptor_set *set, VkAccelerationStructureKHR _topLevelAS);
     static void dump_callparams_and_sbt(void *raygen_sbt, void *miss_sbt, void *hit_sbt, void *callable_sbt, bool is_indirect, uint32_t launch_width, uint32_t launch_height, uint32_t launch_depth, uint32_t launch_size_addr);
+    static void dumpVertex(struct anv_vertex_binding *vb, uint32_t setID);
     static void dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t binding, VkDescriptorType type);
     static void dumpStorageImage(struct anv_descriptor *desc, uint32_t setID, uint32_t binding, VkDescriptorType type);
     static void setDescriptorSetFromLauncher(void *address, void *deviceAddress, uint32_t setID, uint32_t descID);

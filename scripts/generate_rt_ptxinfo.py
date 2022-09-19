@@ -67,6 +67,17 @@ for l in lines:
         idx4 = l.index(";")
         #print(l[idx3+5:idx4])
         unknown_op_line.append(int(l[idx3+5:idx4]))
+    if (l.find("Arguments mismatch for instruction") != -1):
+        idx1 = l.index("'")
+        idx2 = l.index("'", idx1+1)
+        #print(idx1, idx2)
+        #print(l[idx1+1:idx2])
+        unknown_op_name.append(l[idx1+1:idx2])
+
+        idx3 = l.index("line ")
+        idx4 = l.index(";")
+        #print(l[idx3+5:idx4])
+        unknown_op_line.append(int(l[idx3+5:idx4]))
 
 unknown_symbols = list(set(unknown_symbols)) # removes duplicates
 
