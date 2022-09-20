@@ -29,6 +29,7 @@
 #include "vulkan_ray_tracing.h"
 #include "vulkan_rt_thread_data.h"
 
+#include <assert.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -1230,89 +1231,111 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 const bool writeImageBinary = true;
 
-void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vb) {
-
-    // dump vertex buffer
-    for (unsigned i = 0; i < MAX_VBS; i++) {
-        if (vb[i].buffer) {
-            printf("vb[%u] is used\n",i);
-            dumpVertex(&vb[i],i);
-        }
+void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
+                                 struct anv_graphics_pipeline *pipeline) {
+  // dump vertex buffer
+  unsigned vertex_count = -1;
+  for (unsigned i = 0; i < MAX_VBS; i++) {
+    if (vbuffer[i].buffer) {
+      // printf("vb[%u] is used\n", i);
+      dumpVertex(&vbuffer[i], pipeline, i);
+      // stride should be multilpe of 4 bytes -> vectors
+      assert(pipeline->vb[i].stride % 4 == 0);
+      // vertex count should be multiple of vector size
+      assert(vbuffer[i].buffer->size % (pipeline->vb[i].stride / 4) == 0);
+      if (vertex_count == (unsigned)-1) {
+        vertex_count = vbuffer[i].buffer->size / (pipeline->vb[i].stride / 4);
+      } else {
+        // all vertex buffer of the same draw should have the same vertex count
+        assert(vertex_count ==
+               vbuffer[i].buffer->size / (pipeline->vb[i].stride / 4));
+      }
     }
-    // Dump Descriptor Sets
-    if (!use_external_launcher) 
-    {
-        dump_descriptor_sets(VulkanRayTracing::descriptorSet);
-        // dump_callparams_and_sbt(raygen_sbt, miss_sbt, hit_sbt, callable_sbt, is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
-
-        // ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
-        // struct anv_vertex_binding *vb = cmd_buffer->state.vertex_bindings;
-    }
-    if(writeImageBinary && !imageFile.is_open())
-    {
-        char* imageFileName;
-        char defaultFileName[40] = "image.binary";
-        if(getenv("VULKAN_IMAGE_FILE_NAME"))
-            imageFileName = getenv("VULKAN_IMAGE_FILE_NAME");
-        else
-            imageFileName = defaultFileName;
-        imageFile.open(imageFileName, std::ios::out | std::ios::binary);
-        
-        // imageFile.open("image.txt", std::ios::out);
-    }
+  }
+  assert(vertex_count != -1);
+  // Dump Descriptor Sets
+  if (!use_external_launcher) {
+    dump_descriptor_sets(VulkanRayTracing::descriptorSet);
+  }
+  if (writeImageBinary && !imageFile.is_open()) {
+    char *imageFileName;
+    char defaultFileName[40] = "image.binary";
+    if (getenv("VULKAN_IMAGE_FILE_NAME"))
+      imageFileName = getenv("VULKAN_IMAGE_FILE_NAME");
     else
-        return;
+      imageFileName = defaultFileName;
+    imageFile.open(imageFileName, std::ios::out | std::ios::binary);
 
-    struct anv_descriptor desc;
-    desc.image_view = NULL;
+    // imageFile.open("image.txt", std::ios::out);
+  } else
+    return;
 
-    gpgpu_context *ctx;
-    ctx = GPGPU_Context();
-    CUctx_st *context = GPGPUSim_Context(ctx);
+  struct anv_descriptor desc;
+  desc.image_view = NULL;
 
-    // unsigned long shaderId = *(uint64_t*)raygen_sbt;
-    // int index = 0;
-    // for (int i = 0; i < shaders.size(); i++) {
-    //     if (shaders[i].ID == 0){
-    //         index = i;
-    //         break;
-    //     }
-    // }
-    ctx->func_sim->g_total_shaders = shaders.size();
+  gpgpu_context *ctx;
+  ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
 
-    shader_stage_info shader = shaders[0];
-    function_info *entry = context->get_kernel(shader.function_name);
+  // unsigned long shaderId = *(uint64_t*)raygen_sbt;
+  // int index = 0;
+  // for (int i = 0; i < shaders.size(); i++) {
+  //     if (shaders[i].ID == 0){
+  //         index = i;
+  //         break;
+  //     }
+  // }
+  ctx->func_sim->g_total_shaders = shaders.size();
 
-    unsigned n_return = entry->has_return();
-    unsigned n_args = entry->num_args();
-    //unsigned n_operands = pI->get_num_operands();
+  shader_stage_info shader = shaders[0];
+  function_info *entry = context->get_kernel(shader.function_name);
 
-    // launch_width = 1;
-    // launch_height = 1;
+  if (entry->is_pdom_set()) {
+    printf("GPGPU-Sim PTX: PDOM analysis already done for %s \n",
+           entry->get_name().c_str());
+  } else {
+    printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n",
+           entry->get_name().c_str());
+    /*
+     * Some of the instructions like printf() gives the gpgpusim the wrong
+     * impression that it is a function call. As printf() doesnt have a body
+     * like functions do, doing pdom analysis for printf() causes a crash.
+     */
+    if (entry->get_function_size() > 0) entry->do_pdom();
+    entry->set_pdom();
+  }
 
-    dim3 blockDim = dim3(1, 1, 1);
-    dim3 gridDim = dim3(1, 1, 1);
+  unsigned n_return = entry->has_return();
+  unsigned n_args = entry->num_args();
+  // unsigned n_operands = pI->get_num_operands();
 
-    gpgpu_ptx_sim_arg_list_t args;
-    // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
-    //   raygen_shader.function_name, args, dim3(4, 128, 1), dim3(32, 1, 1), context);
-    kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+  // launch_width = 1;
+  // launch_height = 1;
+
+  dim3 blockDim = dim3(64, 1, 1);
+  dim3 gridDim = dim3((vertex_count+63)/64, 1, 1);
+
+  gpgpu_ptx_sim_arg_list_t args;
+  // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+  //   raygen_shader.function_name, args, dim3(4, 128, 1), dim3(32, 1, 1),
+  //   context);
+  kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
       shader.function_name, args, gridDim, blockDim, context);
-    
-    struct CUstream_st *stream = 0;
-    stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
-    ctx->the_gpgpusim->g_stream_manager->push(op);
 
-    //printf("%d\n", descriptors[0][1].address);
+  struct CUstream_st *stream = 0;
+  stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
+  ctx->the_gpgpusim->g_stream_manager->push(op);
 
-    fflush(stdout);
+  // printf("%d\n", descriptors[0][1].address);
 
-    while(!op.is_done() && !op.get_kernel()->done()) {
-        printf("waiting for op to finish\n");
-        sleep(1);
-        continue;
-    }
+  fflush(stdout);
 
+  while (!op.is_done() && !op.get_kernel()->done()) {
+    printf("waiting for op to finish\n");
+    sleep(1);
+    continue;
+  }
+  exit(0);
 }
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(
@@ -1929,26 +1952,31 @@ void VulkanRayTracing::image_store(struct anv_descriptor* desc, uint32_t gl_Laun
 //     thread->RT_thread_data->variable_decleration_table.push_back(entry);
 // }
 
-void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vb, uint32_t setID) {
+void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID) {
 
 
-    uint64_t* address = anv_address_map(vb->buffer->address);
-    uint64_t size = vb->buffer->size;
+    uint64_t* address = anv_address_map(vbuffer->buffer->address);
+    uint64_t size = vbuffer->buffer->size;
 
     // Data to dump
-    FILE *fp;
+    FILE *fp,*mp;
     char *mesa_root = getenv("MESA_ROOT");
     char *filePath = "gpgpusimShaders/";
     // char *extension = ".vkvertexbuffer";
 
     // Vertex data
     char fullPath[200];
+    char metaPath[200];
     snprintf(fullPath, sizeof(fullPath), "%s%s%d.vkvertexdata", mesa_root, filePath, setID);
+    snprintf(metaPath, sizeof(fullPath), "%s%s%d.vkvertexmeta", mesa_root, filePath, setID);
     // File name format: setID_descID.vktexturedata
 
     fp = fopen(fullPath, "wb+");
+    mp = fopen(metaPath, "w+");
     fwrite(address, 1, size, fp);
     fclose(fp);
+    fprintf(mp,"%u",pipeline->vb[setID].stride);
+    fclose(mp);
 
     // // Texture metadata
     // snprintf(fullPath, sizeof(fullPath), "%s%s%d.vktexturemetadata", mesa_root, filePath, setID);
@@ -2280,11 +2308,12 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
    for(int i = 0; i < set->descriptor_count; i++)
    {
        if(i == 2)
-       {
+       {    
+            i = 4;
             // for some reason raytracing_extended skipped binding = 3
             // and somehow they have 34 descriptor sets but only 10 are used
             // so we just skip those
-            continue;
+            // continue;
        }
 
         struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
@@ -2328,14 +2357,14 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
                 {
                     // MRS_TODO: account for desc->offset?
                     //return anv_address_map(desc->buffer->address);
-                    dump_descriptor_set(0, i, anv_address_map(desc->buffer->address), set->descriptors[i].buffer->size, set->descriptors[i].type);
+                    dump_descriptor_set(0, bind_layout->descriptor_index, anv_address_map(desc->buffer->address), set->descriptors[bind_layout->descriptor_index].buffer->size, set->descriptors[bind_layout->descriptor_index].type);
                     break;
                 }
                 else
                 {
                     struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
                     //return anv_address_map(bview->address);
-                    dump_descriptor_set(0, i, anv_address_map(bview->address), bview->range, set->descriptors[i].type);
+                    dump_descriptor_set(0, bind_layout->descriptor_index, anv_address_map(bview->address), bview->range, set->descriptors[bind_layout->descriptor_index].type);
                     break;
                 }
             }

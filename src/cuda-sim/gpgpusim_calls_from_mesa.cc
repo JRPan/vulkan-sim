@@ -73,10 +73,10 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
             is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
 }
 
-extern "C" void gpgpusim_vkCmdDraw(struct anv_vertex_binding *vb)
+extern "C" void gpgpusim_vkCmdDraw(struct anv_vertex_binding *vbuffer, struct anv_graphics_pipeline * pipeline)
 {
     VulkanRayTracing::invoke_gpgpusim();
-    VulkanRayTracing::vkCmdDraw(vb);
+    VulkanRayTracing::vkCmdDraw(vbuffer, pipeline);
     // VulkanRayTracing::vkCmdDraw(void *vertex_buffer);
 }
 
