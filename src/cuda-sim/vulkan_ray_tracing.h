@@ -186,6 +186,15 @@ typedef struct texture_metadata
     VkFilter filter;
 } texture_metadata;
 
+typedef struct vertex_metadata
+{
+    void* vertex_buffers[28];
+    void* vertex_out[28];
+    uint32_t* vertex_size[28];
+    uint32_t* vertex_stride[28];
+    uint64_t* vertex_out_addr[28];
+}vertex_metadata;
+
 struct anv_descriptor_set;
 struct anv_descriptor;
 
@@ -200,6 +209,9 @@ private:
     static std::ofstream imageFile;
     static bool firstTime;
     static struct anv_descriptor_set *descriptorSet;
+    static struct vertex_metadata *VertexMeta;
+    // static void* vertex_buffers[28];
+    // static void* vertex_out[28];
 
     // For Launcher
     static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
@@ -246,6 +258,8 @@ public:
     static void invoke_gpgpusim();
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
     static void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer, struct anv_graphics_pipeline *pipeline);
+    static uint64_t* getVertexAddr(uint32_t buffer_index, uint32_t offset);
+    static void saveVertexOutAddr(uint32_t buffer_index, uint32_t vertex_index, uint32_t size, uint64_t addr);
     static void vkCmdTraceRaysKHR( // called by vulkan application
                       void *raygen_sbt,
                       void *miss_sbt,

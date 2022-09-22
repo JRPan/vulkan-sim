@@ -107,6 +107,7 @@ std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
 bool VulkanRayTracing::dumped = false;
 
 bool use_external_launcher = false;
+struct vertex_metadata* VulkanRayTracing::VertexMeta = NULL;
 
 bool VulkanRayTracing::_init_ = false;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
@@ -1235,12 +1236,14 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline) {
   // dump vertex buffer
   unsigned vertex_count = -1;
+  VertexMeta = new struct vertex_metadata;
   for (unsigned i = 0; i < MAX_VBS; i++) {
     if (vbuffer[i].buffer) {
       // printf("vb[%u] is used\n", i);
       dumpVertex(&vbuffer[i], pipeline, i);
       // stride should be multilpe of 4 bytes -> vectors
       assert(pipeline->vb[i].stride % 4 == 0);
+      VertexMeta->vertex_stride[i] = pipeline->vb[i].stride;
       // vertex count should be multiple of vector size
       assert(vbuffer[i].buffer->size % (pipeline->vb[i].stride / 4) == 0);
       if (vertex_count == (unsigned)-1) {
@@ -1313,7 +1316,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   // launch_height = 1;
 
   dim3 blockDim = dim3(64, 1, 1);
-  dim3 gridDim = dim3((vertex_count+63)/64, 1, 1);
+  dim3 gridDim = dim3(1, 1, 1);
+//   dim3 gridDim = dim3((vertex_count+63)/64, 1, 1);
 
   gpgpu_ptx_sim_arg_list_t args;
   // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
@@ -1335,7 +1339,27 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     sleep(1);
     continue;
   }
+  // vertex shader done
+  // vertex-post processing
+
+
   exit(0);
+}
+
+uint64_t* VulkanRayTracing::getVertexAddr(uint32_t buffer_index, uint32_t offset) {
+    // check if vertex data is in range
+    if ((offset + VertexMeta->vertex_stride[buffer_index]) >= VertexMeta->vertex_size[buffer_index]) {
+        // out of range
+        return NULL;
+    }
+    float *buffer = (float*) VertexMeta->vertex_buffers[buffer_index];
+    return VertexMeta->vertex_buffers[buffer_index] + offset;
+}
+
+void VulkanRayTracing::saveVertexOutAddr(uint32_t buffer_index, uint32_t vertex_index, uint32_t size, uint64_t addr) {
+    assert(vertex_index < VertexMeta->vertex_size[buffer_index]);
+    for (int i =0; i < size; i++)
+        VertexMeta->vertex_out_addr[buffer_index][vertex_index + i] = addr + 4 * i;
 }
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(
@@ -1957,7 +1981,11 @@ void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vbuffer, struct anv
 
     uint64_t* address = anv_address_map(vbuffer->buffer->address);
     uint64_t size = vbuffer->buffer->size;
-
+    VertexMeta->vertex_buffers[setID] = malloc(sizeof(float) * size);
+    VertexMeta->vertex_out[setID] = malloc(sizeof(float) * size);
+    VertexMeta->vertex_size[setID] = size;
+    VertexMeta->vertex_out_addr[setID] = malloc(sizeof(uint64_t) * size);
+    memcpy(VertexMeta->vertex_buffers[setID],address,size);
     // Data to dump
     FILE *fp,*mp;
     char *mesa_root = getenv("MESA_ROOT");

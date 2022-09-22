@@ -7403,6 +7403,46 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   data.u64 = address;
+  
+  if(name == "\%position" || name == "\%texcoord_0" || name == "\%normal") {
+    // vertex data
+    memory_space *mem = thread->get_global_memory();
+    unsigned buffer_index = -1;
+    if (name == "\%position") {
+      buffer_index = 0;
+    } else if (name == "\%texcoord_0") {
+      buffer_index = 1;
+    } else if (name == "\%normal") {
+      buffer_index = 2;
+    }
+    uint64_t vertex_addr = VulkanRayTracing::getVertexAddr(buffer_index,thread->get_hw_tid() * size);
+    if (vertex_addr == 0) {
+      // vertex out of range. No need to do anything
+      // TODO: just kill this thread
+      return;
+    }
+    // write vertex data from Vulkan Driver into the *device* mem just allocated
+    mem->write(address, size, vertex_addr, thread, pI);
+    // verify 
+    // float *test = malloc(sizeof(float)*size);
+    // mem->read(address,size,test);
+    // assert(*(unsigned*) test == *(unsigned*) vertex_addr);
+  }
+  if (name == "\%field0" || name == "\%o_uv3" || name == "\%o_normal4") {
+    unsigned buffer_index = -1;
+    if (name == "\%field0") {
+      buffer_index = 0;
+    } else if (name == "\%o_uv3") {
+      buffer_index = 1;
+    } else if (name == "\%o_normal4") {
+      buffer_index = 2;
+    }
+    // assuming all vertex data are 4 byte
+    unsigned vertex_index = thread->get_hw_tid() * (size/4);
+    VulkanRayTracing::saveVertexOutAddr(buffer_index,vertex_index, size/4,address);
+
+  }
+
   thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
 }
 
