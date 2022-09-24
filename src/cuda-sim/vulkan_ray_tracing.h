@@ -203,10 +203,13 @@ typedef struct vertex_metadata
     uint32_t vertex_out_size[MAX_VERTEX] = {0};
     uint32_t vertex_out_count[MAX_VERTEX] = {0};
     uint32_t vertex_out_stride[MAX_VERTEX] = {0};
-    std::bitset<47568> vertex_mask;
+    // std::bitset<47568> vertex_mask;
 
     std::vector<struct anv_buffer *> index_buffer;
+    std::vector<struct anv_buffer *> vertex_buffer;
     std::vector<std::vector<unsigned>> index_to_draw;
+    unsigned width;
+    unsigned height;
 }vertex_metadata;
 
 struct anv_descriptor_set;
@@ -273,6 +276,7 @@ public:
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
     static void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer, struct anv_graphics_pipeline *pipeline);
     static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr);
+    static void VulkanRayTracing::saveVertexBuffer(struct anv_vertex_binding *ptr);
     static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t offset);
     static uint64_t getVertexOutAddr(uint32_t buffer_index, uint32_t offset);
     static void vkCmdTraceRaysKHR( // called by vulkan application
@@ -303,7 +307,7 @@ public:
     static void dump_descriptor_sets(struct anv_descriptor_set *set);
     static void dump_AS(struct anv_descriptor_set *set, VkAccelerationStructureKHR _topLevelAS);
     static void dump_callparams_and_sbt(void *raygen_sbt, void *miss_sbt, void *hit_sbt, void *callable_sbt, bool is_indirect, uint32_t launch_width, uint32_t launch_height, uint32_t launch_depth, uint32_t launch_size_addr);
-    static void dumpVertex(struct anv_vertex_binding *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID);
+    static void dumpVertex(struct anv_buffer *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID);
     static void dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t descID, uint32_t binding, VkDescriptorType type);
     static void dumpStorageImage(struct anv_descriptor *desc, uint32_t setID, uint32_t binding, VkDescriptorType type);
     static void setDescriptorSetFromLauncher(void *address, void *deviceAddress, uint32_t setID, uint32_t descID);

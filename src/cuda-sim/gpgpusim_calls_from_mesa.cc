@@ -83,6 +83,9 @@ extern "C" void gpgpusim_vkCmdDraw(struct anv_vertex_binding *vbuffer, struct an
 extern "C" void gpgpusim_saveIndexBuffer(struct anv_buffer *ptr) {
     VulkanRayTracing::saveIndexBuffer(ptr);
 }
+extern "C" void gpgpusim_saveVertexBuffer(struct anv_vertex_binding *ptr) {
+    VulkanRayTracing::saveVertexBuffer(ptr);
+}
 
 extern "C" void gpgpusim_setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type)
 {

@@ -1182,7 +1182,7 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
     unsigned max_capability = 20;
     unsigned selected_capability = 20;
     bool found = false;
-    
+
     unsigned long long fat_cubin_handle = shader.ID;
 
     // PTX File
@@ -1202,7 +1202,7 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
         printf("               Ensure ptxas is in your path.\n");
         exit(1);
     }
-    
+
     char ptxinfo_filename[400];
     snprintf(ptxinfo_filename, sizeof(ptxinfo_filename), "%sinfo", shaderPath);
     ctx->gpgpu_ptx_info_load_from_external_file(ptxinfo_filename); // TODO: make a version where it just loads my ptxinfo instead of generating a new one
@@ -1236,11 +1236,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline) {
   // dump vertex buffer
   unsigned vertex_count = -1;
-  // VertexMeta = new struct vertex_metadata;
   for (unsigned i = 0; i < MAX_VBS; i++) {
     if (vbuffer[i].buffer) {
       // printf("vb[%u] is used\n", i);
-      dumpVertex(&vbuffer[i], pipeline, i);
+      dumpVertex(VertexMeta->vertex_buffer[i], pipeline, i);
       // stride should be multilpe of 4 bytes -> vectors
       assert(pipeline->vb[i].stride % 4 == 0);
       VertexMeta->vertex_stride[i] = pipeline->vb[i].stride;
@@ -1257,15 +1256,21 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     }
   }
   assert(vertex_count != -1);
-  // manual override. 
+  // manual override.
   VertexMeta->vertex_out_stride[0] = VertexMeta->vertex_out_stride[0] / 3 * 4;
   VertexMeta->vertex_out_count[0] = VertexMeta->vertex_out_count[0] / 3 * 4;
   VertexMeta->vertex_out_size[0] = VertexMeta->vertex_out_size[0] / 3 * 4;
 
-  uint16_t* index_buffer = malloc(VertexMeta->index_buffer[0]->size);
-  memcpy(index_buffer,anv_address_map(VertexMeta->index_buffer[0]->address),VertexMeta->index_buffer[0]->size);
-  for (unsigned i = 0; i < VertexMeta->index_buffer[0]->size/2; i = i + 3) {
-    printf("triangle %u - [%u, %u, %u]\n",i ,index_buffer[i],index_buffer[i + 1], index_buffer[i + 2]);
+  uint16_t *index_buffer =
+      anv_address_map(VertexMeta->index_buffer[0]->address);
+  for (unsigned i = 0; i < VertexMeta->index_buffer[0]->size / 2; i = i + 3) {
+    std::vector<unsigned> prim;
+    prim.push_back(index_buffer[i]);
+    prim.push_back(index_buffer[i + 1]);
+    prim.push_back(index_buffer[i + 2]);
+    VertexMeta->index_to_draw.push_back(prim);
+    printf("triangle %u - [%u, %u, %u]\n", i, index_buffer[i],
+           index_buffer[i + 1], index_buffer[i + 2]);
   }
 
   gpgpu_context *ctx = GPGPU_Context();
@@ -1280,12 +1285,14 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   VertexMeta->vertex_out[1] = malloc(VertexMeta->vertex_out_size[1]);
   // device pointer
   VertexMeta->vertex_out_devptr[1] =
-      context->get_device()->get_gpgpu()->gpu_malloc(VertexMeta->vertex_out_size[1]);
+      context->get_device()->get_gpgpu()->gpu_malloc(
+          VertexMeta->vertex_out_size[1]);
 
   VertexMeta->vertex_out[2] = malloc(VertexMeta->vertex_out_size[2]);
   // device pointer
   VertexMeta->vertex_out_devptr[2] =
-      context->get_device()->get_gpgpu()->gpu_malloc(VertexMeta->vertex_out_size[2]);
+      context->get_device()->get_gpgpu()->gpu_malloc(
+          VertexMeta->vertex_out_size[2]);
   // Dump Descriptor Sets
   if (!use_external_launcher) {
     dump_descriptor_sets(VulkanRayTracing::descriptorSet);
@@ -1303,21 +1310,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   } else
     return;
 
-  struct anv_descriptor desc;
-  desc.image_view = NULL;
-
-  // gpgpu_context *ctx;
-  // ctx = GPGPU_Context();
-  // CUctx_st *context = GPGPUSim_Context(ctx);
-
-  // unsigned long shaderId = *(uint64_t*)raygen_sbt;
-  // int index = 0;
-  // for (int i = 0; i < shaders.size(); i++) {
-  //     if (shaders[i].ID == 0){
-  //         index = i;
-  //         break;
-  //     }
-  // }
   ctx->func_sim->g_total_shaders = shaders.size();
 
   shader_stage_info shader = shaders[0];
@@ -1346,7 +1338,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   // launch_height = 1;
   dim3 blockDim = dim3(64, 1, 1);
   // dim3 gridDim = dim3(1, 1, 1);
-  dim3 gridDim = dim3((vertex_count+63)/64, 1, 1);
+  dim3 gridDim = dim3((vertex_count + 63) / 64, 1, 1);
 
   gpgpu_ptx_sim_arg_list_t args;
   // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
@@ -1357,17 +1349,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
   struct CUstream_st *stream = 0;
   stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
-  ctx->the_gpgpusim->g_stream_manager->push(op);
+  // ctx->the_gpgpusim->g_stream_manager->push(op);
 
-  // printf("%d\n", descriptors[0][1].address);
+  // fflush(stdout);
 
-  fflush(stdout);
-
-  while (!op.is_done() && !op.get_kernel()->done()) {
-    printf("waiting for op to finish\n");
-    sleep(1);
-    continue;
-  }
+  // while (!op.is_done() && !op.get_kernel()->done()) {
+  //   printf("waiting for op to finish\n");
+  //   sleep(1);
+  //   continue;
+  // }
   // vertex shader done
   context->get_device()->get_gpgpu()->memcpy_from_gpu(
       VertexMeta->vertex_out[0], VertexMeta->vertex_out_devptr[0],
@@ -1380,27 +1370,64 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       VertexMeta->vertex_out_size[2]);
 
   // vertex-post processing
-  unsigned counter = 0;
-  // tranform & clipping 
-  float *ndc = malloc(VertexMeta->vertex_out_size[0]);
-  for (unsigned i = 0; i < VertexMeta->vertex_out_count[0]; i = i + 4)
-  {
-    ndc[i] = VertexMeta->vertex_out[0][i] / VertexMeta->vertex_out[0][i+3];
-    ndc[i+1] = VertexMeta->vertex_out[0][i+1] / VertexMeta->vertex_out[0][i+3];
-    ndc[i+2] = VertexMeta->vertex_out[0][i+2] / VertexMeta->vertex_out[0][i+3];
-    ndc[i+3] = VertexMeta->vertex_out[0][i+3] / VertexMeta->vertex_out[0][i+3];
+  // tranform & clipping
+  std::vector<std::vector<float>> vertex_ndc;
+  for (unsigned i = 0; i < VertexMeta->vertex_out_count[0]; i = i + 4) {
+    // transform to NDC space
+    std::vector<float> vertex;
+    vertex.push_back(VertexMeta->vertex_out[0][i] /
+                     VertexMeta->vertex_out[0][i + 3]);
+    vertex.push_back(VertexMeta->vertex_out[0][i + 1] /
+                     VertexMeta->vertex_out[0][i + 3]);
+    vertex.push_back(VertexMeta->vertex_out[0][i + 2] /
+                     VertexMeta->vertex_out[0][i + 3]);
+    vertex.push_back(VertexMeta->vertex_out[0][i + 3] /
+                     VertexMeta->vertex_out[0][i + 3]);
+    vertex_ndc.push_back(vertex);
 
-    if ((ndc[i] < 1.0 && ndc[i] > -1.0) &&
-        (ndc[i + 1] < 1.0 && ndc[i + 1] > -1.0)) {
-      printf("survived vertex %u, [%f %f %f %f]\n", i, ndc[i], ndc[i + 1],
-             ndc[i + 2], ndc[i + 3]);
-      counter++;
-    }
-    printf("clipped vertex %u, original coord: [%f %f %f %f]\n",i,VertexMeta->vertex_out[0][i],VertexMeta->vertex_out[0][i+1],VertexMeta->vertex_out[0][i+2],VertexMeta->vertex_out[0][i+3]);
-
+    // printf("transformed NDC vertex %u, [%f %f %f %f]\n", i, vertex[0],
+    //        vertex[1], vertex[2], vertex[3]);
   }
-  printf("total vertexs survived: %u\n",counter);
-  assert(VertexMeta->vertex_mask.all());
+
+  // Assemble into triangles using index buffer
+  // [primitives->[vertex->[xyz]]]
+  std::vector<std::vector<std::vector<float>>> primitives;
+  for (std::vector<std::vector<unsigned>>::iterator index =
+           VertexMeta->index_to_draw.begin();
+       index < VertexMeta->index_to_draw.end(); index++) {
+    std::vector<std::vector<float>> vertexs;
+    for (std::vector<unsigned>::iterator edge = (*index).begin();
+         edge < (*index).end(); edge++) {
+      if ((vertex_ndc[*edge][0] > -1 && vertex_ndc[*edge][0] < 1) &&
+          (vertex_ndc[*edge][1] > -1 && vertex_ndc[*edge][1] < 1)) {
+        // edge is in the view
+        assert((unsigned)vertex_ndc[*edge][3] == 1);
+        vertexs.push_back(vertex_ndc[*edge]);
+      }
+    }
+
+    if (vertexs.size() == 3) {
+      // if (in_view == vertexs.size()) {
+      primitives.push_back(vertexs);
+    }
+  }
+  printf("total survived primitives: %u\n", primitives.size());
+
+  // read in framebuffer before & after, and do diff
+  FILE *fp, *mp;
+  char *mesa_root = getenv("MESA_ROOT");
+  char *filePath = "../fb/";
+
+  // Vertex data
+  char fullPath[200];
+  char metaPath[200];
+  snprintf(fullPath, sizeof(fullPath), "%s%s.vkvertexdata", mesa_root,
+           filePath);
+  // File name format: setID_descID.vktexturedata
+
+  fp = fopen(fullPath, "wb+");
+  mp = fopen(metaPath, "w+");
+  fwrite(address, 1, size, fp);
 
   exit(0);
 }
@@ -1408,29 +1435,30 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr) {
   VertexMeta->index_buffer.push_back(ptr);
 }
-uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index, uint32_t offset) {
-    // check if vertex data is in range
-    if ((offset + VertexMeta->vertex_stride[buffer_index]/4) > VertexMeta->vertex_count[buffer_index]) {
-        // out of range
-        return VertexMeta->vertex_addr[buffer_index];
-    }
-    
-    return VertexMeta->vertex_addr[buffer_index] + offset;
+
+void VulkanRayTracing::saveVertexBuffer(struct anv_vertex_binding *ptr) {
+  VertexMeta->vertex_buffer.push_back(ptr->buffer);
+}
+
+uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
+                                         uint32_t offset) {
+  // check if vertex data is in range
+  if ((offset + VertexMeta->vertex_stride[buffer_index] / 4) >
+      VertexMeta->vertex_count[buffer_index]) {
+    // out of range
+    return VertexMeta->vertex_addr[buffer_index];
+  }
+
+  return VertexMeta->vertex_addr[buffer_index] + offset;
 }
 
 uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
                                             uint32_t offset) {
   // vertex position buffer change from vec3 -> vec4
-  if (offset + VertexMeta->vertex_out_stride[buffer_index] / 4 > VertexMeta->vertex_out_count[buffer_index]) {
+  if (offset + VertexMeta->vertex_out_stride[buffer_index] / 4 >
+      VertexMeta->vertex_out_count[buffer_index]) {
     // out of range
     return VertexMeta->vertex_out_devptr[buffer_index];
-  }
-  if (buffer_index == 0) {
-    for (int i = 0; i < 4; i++) {
-      unsigned index = offset + i;
-      assert(!VertexMeta->vertex_mask.test(index));
-      VertexMeta->vertex_mask.set(index);
-    }
   }
   return VertexMeta->vertex_out_devptr[buffer_index] + offset;
 }
