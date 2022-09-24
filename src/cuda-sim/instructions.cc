@@ -3424,6 +3424,9 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     // printf("float value = %f\n", *((float*)addr64));
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
+    if (pI->source_line() == 205) {
+      printf("thread %u reading %f from %x\n",thread->get_uid()-1,data.f32,addr);
+    }
   } else {
     assert(0); //MRS_TODO: what happends here? turn this to 64 bit as well
     ptx_reg_t data1, data2, data3, data4;
@@ -5863,6 +5866,9 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
+    if (pI->source_line() == 639) {
+      printf("thread %u writing %f to %x\n",thread->get_uid()-1,data.f32,addr);
+    }
     mem->write(addr, size / 8, &data.s64, thread, pI);
     // assert(size == 32);
     // memcpy(address, &data.s64, size / 8);
@@ -7399,49 +7405,11 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     assert (address != NULL);
   } 
   else {
-    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size);
+    // assuming every vertex data is 32-bit
+    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size, (thread->get_uid()-1) * size/4);
   }
 
   data.u64 = address;
-  
-  if(name == "\%position" || name == "\%texcoord_0" || name == "\%normal") {
-    // vertex data
-    memory_space *mem = thread->get_global_memory();
-    unsigned buffer_index = -1;
-    if (name == "\%position") {
-      buffer_index = 0;
-    } else if (name == "\%texcoord_0") {
-      buffer_index = 1;
-    } else if (name == "\%normal") {
-      buffer_index = 2;
-    }
-    uint64_t vertex_addr = VulkanRayTracing::getVertexAddr(buffer_index,thread->get_hw_tid() * size);
-    if (vertex_addr == 0) {
-      // vertex out of range. No need to do anything
-      // TODO: just kill this thread
-      return;
-    }
-    // write vertex data from Vulkan Driver into the *device* mem just allocated
-    mem->write(address, size, vertex_addr, thread, pI);
-    // verify 
-    // float *test = malloc(sizeof(float)*size);
-    // mem->read(address,size,test);
-    // assert(*(unsigned*) test == *(unsigned*) vertex_addr);
-  }
-  if (name == "\%field0" || name == "\%o_uv3" || name == "\%o_normal4") {
-    unsigned buffer_index = -1;
-    if (name == "\%field0") {
-      buffer_index = 0;
-    } else if (name == "\%o_uv3") {
-      buffer_index = 1;
-    } else if (name == "\%o_normal4") {
-      buffer_index = 2;
-    }
-    // assuming all vertex data are 4 byte
-    unsigned vertex_index = thread->get_hw_tid() * (size/4);
-    VulkanRayTracing::saveVertexOutAddr(buffer_index,vertex_index, size/4,address);
-
-  }
 
   thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
 }

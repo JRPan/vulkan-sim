@@ -71,16 +71,47 @@ typedef struct Vulkan_RT_thread_data {
         return NULL;
     }
 
-    uint64_t add_variable_decleration_entry(uint64_t type, std::string name, uint32_t size) {
-        variable_decleration_entry entry;
-        entry.type = type;
-        entry.name = name;
-        // entry.address = (uint64_t) malloc(size);
-        entry.address = (uint64_t) VulkanRayTracing::gpgpusim_alloc(size);
-        entry.size = size;
-        variable_decleration_table.push_back(entry);
+    uint64_t add_variable_decleration_entry(uint64_t type, std::string name,
+                                            uint32_t size, uint32_t offset) {
+      variable_decleration_entry entry;
+      entry.type = type;
+      entry.name = name;
+      // entry.address = (uint64_t) malloc(size);
+      if (name == "\%position" || name == "\%texcoord_0" ||
+          name == "\%normal") {
+        unsigned buffer_index = -1;
+        if (name == "\%position") {
+          buffer_index = 0;
+        } else if (name == "\%texcoord_0") {
+          buffer_index = 1;
+        } else if (name == "\%normal") {
+          buffer_index = 2;
+        }
+        entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+        if (entry.address == 0)
+          entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+      } else if (name == "\%field0" || name == "\%o_uv3" ||
+                 name == "\%o_normal4") {
+        unsigned buffer_index = -1;
+        if (name == "\%field0") {
+          buffer_index = 0;
+        } else if (name == "\%o_uv3") {
+          buffer_index = 1;
+        } else if (name == "\%o_normal4") {
+          buffer_index = 2;
+        }
+        // assuming all vertex data are 4 byte
+        entry.address = VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        if (entry.address == 0)
+          entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
 
-        return entry.address;
+      } else {
+        entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+      }
+      entry.size = size;
+      variable_decleration_table.push_back(entry);
+
+      return entry.address;
     }
 
     variable_decleration_entry* get_hitAttribute() {
@@ -99,7 +130,7 @@ typedef struct Vulkan_RT_thread_data {
         variable_decleration_entry* hitAttribute = get_hitAttribute();
         float* address;
         if(hitAttribute == NULL) {
-            address = (float*)add_variable_decleration_entry(8192, "attribs", 12);
+            address = (float*)add_variable_decleration_entry(8192, "attribs", 12,0);
         }
         else {
             assert (hitAttribute->type == 8192);

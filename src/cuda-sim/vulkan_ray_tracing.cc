@@ -107,7 +107,7 @@ std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
 bool VulkanRayTracing::dumped = false;
 
 bool use_external_launcher = false;
-struct vertex_metadata* VulkanRayTracing::VertexMeta = NULL;
+struct vertex_metadata* VulkanRayTracing::VertexMeta = new struct vertex_metadata;
 
 bool VulkanRayTracing::_init_ = false;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
@@ -1236,7 +1236,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline) {
   // dump vertex buffer
   unsigned vertex_count = -1;
-  VertexMeta = new struct vertex_metadata;
+  // VertexMeta = new struct vertex_metadata;
   for (unsigned i = 0; i < MAX_VBS; i++) {
     if (vbuffer[i].buffer) {
       // printf("vb[%u] is used\n", i);
@@ -1244,18 +1244,48 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       // stride should be multilpe of 4 bytes -> vectors
       assert(pipeline->vb[i].stride % 4 == 0);
       VertexMeta->vertex_stride[i] = pipeline->vb[i].stride;
+      VertexMeta->vertex_out_stride[i] = pipeline->vb[i].stride;
       // vertex count should be multiple of vector size
       assert(vbuffer[i].buffer->size % (pipeline->vb[i].stride / 4) == 0);
       if (vertex_count == (unsigned)-1) {
-        vertex_count = vbuffer[i].buffer->size / (pipeline->vb[i].stride / 4);
+        vertex_count = vbuffer[i].buffer->size / (pipeline->vb[i].stride);
       } else {
         // all vertex buffer of the same draw should have the same vertex count
         assert(vertex_count ==
-               vbuffer[i].buffer->size / (pipeline->vb[i].stride / 4));
+               vbuffer[i].buffer->size / (pipeline->vb[i].stride));
       }
     }
   }
   assert(vertex_count != -1);
+  // manual override. 
+  VertexMeta->vertex_out_stride[0] = VertexMeta->vertex_out_stride[0] / 3 * 4;
+  VertexMeta->vertex_out_count[0] = VertexMeta->vertex_out_count[0] / 3 * 4;
+  VertexMeta->vertex_out_size[0] = VertexMeta->vertex_out_size[0] / 3 * 4;
+
+  uint16_t* index_buffer = malloc(VertexMeta->index_buffer[0]->size);
+  memcpy(index_buffer,anv_address_map(VertexMeta->index_buffer[0]->address),VertexMeta->index_buffer[0]->size);
+  for (unsigned i = 0; i < VertexMeta->index_buffer[0]->size/2; i = i + 3) {
+    printf("triangle %u - [%u, %u, %u]\n",i ,index_buffer[i],index_buffer[i + 1], index_buffer[i + 2]);
+  }
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  // fk it just static set vertex output size for now
+  VertexMeta->vertex_out[0] = malloc(VertexMeta->vertex_out_size[0]);
+  // device pointer
+  VertexMeta->vertex_out_devptr[0] =
+      context->get_device()->get_gpgpu()->gpu_malloc(
+          VertexMeta->vertex_out_size[0]);
+
+  VertexMeta->vertex_out[1] = malloc(VertexMeta->vertex_out_size[1]);
+  // device pointer
+  VertexMeta->vertex_out_devptr[1] =
+      context->get_device()->get_gpgpu()->gpu_malloc(VertexMeta->vertex_out_size[1]);
+
+  VertexMeta->vertex_out[2] = malloc(VertexMeta->vertex_out_size[2]);
+  // device pointer
+  VertexMeta->vertex_out_devptr[2] =
+      context->get_device()->get_gpgpu()->gpu_malloc(VertexMeta->vertex_out_size[2]);
   // Dump Descriptor Sets
   if (!use_external_launcher) {
     dump_descriptor_sets(VulkanRayTracing::descriptorSet);
@@ -1276,9 +1306,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   struct anv_descriptor desc;
   desc.image_view = NULL;
 
-  gpgpu_context *ctx;
-  ctx = GPGPU_Context();
-  CUctx_st *context = GPGPUSim_Context(ctx);
+  // gpgpu_context *ctx;
+  // ctx = GPGPU_Context();
+  // CUctx_st *context = GPGPUSim_Context(ctx);
 
   // unsigned long shaderId = *(uint64_t*)raygen_sbt;
   // int index = 0;
@@ -1314,10 +1344,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
   // launch_width = 1;
   // launch_height = 1;
-
   dim3 blockDim = dim3(64, 1, 1);
-  dim3 gridDim = dim3(1, 1, 1);
-//   dim3 gridDim = dim3((vertex_count+63)/64, 1, 1);
+  // dim3 gridDim = dim3(1, 1, 1);
+  dim3 gridDim = dim3((vertex_count+63)/64, 1, 1);
 
   gpgpu_ptx_sim_arg_list_t args;
   // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
@@ -1340,26 +1369,70 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     continue;
   }
   // vertex shader done
-  // vertex-post processing
+  context->get_device()->get_gpgpu()->memcpy_from_gpu(
+      VertexMeta->vertex_out[0], VertexMeta->vertex_out_devptr[0],
+      VertexMeta->vertex_out_size[0]);
+  context->get_device()->get_gpgpu()->memcpy_from_gpu(
+      VertexMeta->vertex_out[1], VertexMeta->vertex_out_devptr[1],
+      VertexMeta->vertex_out_size[1]);
+  context->get_device()->get_gpgpu()->memcpy_from_gpu(
+      VertexMeta->vertex_out[2], VertexMeta->vertex_out_devptr[2],
+      VertexMeta->vertex_out_size[2]);
 
+  // vertex-post processing
+  unsigned counter = 0;
+  // tranform & clipping 
+  float *ndc = malloc(VertexMeta->vertex_out_size[0]);
+  for (unsigned i = 0; i < VertexMeta->vertex_out_count[0]; i = i + 4)
+  {
+    ndc[i] = VertexMeta->vertex_out[0][i] / VertexMeta->vertex_out[0][i+3];
+    ndc[i+1] = VertexMeta->vertex_out[0][i+1] / VertexMeta->vertex_out[0][i+3];
+    ndc[i+2] = VertexMeta->vertex_out[0][i+2] / VertexMeta->vertex_out[0][i+3];
+    ndc[i+3] = VertexMeta->vertex_out[0][i+3] / VertexMeta->vertex_out[0][i+3];
+
+    if ((ndc[i] < 1.0 && ndc[i] > -1.0) &&
+        (ndc[i + 1] < 1.0 && ndc[i + 1] > -1.0)) {
+      printf("survived vertex %u, [%f %f %f %f]\n", i, ndc[i], ndc[i + 1],
+             ndc[i + 2], ndc[i + 3]);
+      counter++;
+    }
+    printf("clipped vertex %u, original coord: [%f %f %f %f]\n",i,VertexMeta->vertex_out[0][i],VertexMeta->vertex_out[0][i+1],VertexMeta->vertex_out[0][i+2],VertexMeta->vertex_out[0][i+3]);
+
+  }
+  printf("total vertexs survived: %u\n",counter);
+  assert(VertexMeta->vertex_mask.all());
 
   exit(0);
 }
 
-uint64_t* VulkanRayTracing::getVertexAddr(uint32_t buffer_index, uint32_t offset) {
+void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr) {
+  VertexMeta->index_buffer.push_back(ptr);
+}
+uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index, uint32_t offset) {
     // check if vertex data is in range
-    if ((offset + VertexMeta->vertex_stride[buffer_index]) >= VertexMeta->vertex_size[buffer_index]) {
+    if ((offset + VertexMeta->vertex_stride[buffer_index]/4) > VertexMeta->vertex_count[buffer_index]) {
         // out of range
-        return NULL;
+        return VertexMeta->vertex_addr[buffer_index];
     }
-    float *buffer = (float*) VertexMeta->vertex_buffers[buffer_index];
-    return VertexMeta->vertex_buffers[buffer_index] + offset;
+    
+    return VertexMeta->vertex_addr[buffer_index] + offset;
 }
 
-void VulkanRayTracing::saveVertexOutAddr(uint32_t buffer_index, uint32_t vertex_index, uint32_t size, uint64_t addr) {
-    assert(vertex_index < VertexMeta->vertex_size[buffer_index]);
-    for (int i =0; i < size; i++)
-        VertexMeta->vertex_out_addr[buffer_index][vertex_index + i] = addr + 4 * i;
+uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
+                                            uint32_t offset) {
+  // vertex position buffer change from vec3 -> vec4
+  if (offset + VertexMeta->vertex_out_stride[buffer_index] / 4 > VertexMeta->vertex_out_count[buffer_index]) {
+    // out of range
+    return VertexMeta->vertex_out_devptr[buffer_index];
+  }
+  if (buffer_index == 0) {
+    for (int i = 0; i < 4; i++) {
+      unsigned index = offset + i;
+      assert(!VertexMeta->vertex_mask.test(index));
+      VertexMeta->vertex_mask.set(index);
+    }
+  }
+  return VertexMeta->vertex_out_devptr[buffer_index] + offset;
 }
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(
@@ -1719,79 +1792,80 @@ void VulkanRayTracing::setDescriptorSetFromLauncher(void *address, void *deviceA
 
 void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
 {
-    if (use_external_launcher)
-    {
-        return launcher_deviceDescriptorSets[setID][binding];
-        // return launcher_descriptorSets[setID][binding];
-    }
-    else 
-    {
-        // assert(setID < descriptors.size());
-        // assert(binding < descriptors[setID].size());
+    return launcher_deviceDescriptorSets[setID][binding];
+    // if (use_external_launcher)
+    // {
+    //     return launcher_deviceDescriptorSets[setID][binding];
+    //     // return launcher_descriptorSets[setID][binding];
+    // }
+    // else 
+    // {
+    //     // assert(setID < descriptors.size());
+    //     // assert(binding < descriptors[setID].size());
 
-        struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
+    //     struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
 
-        const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[binding];
-        struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
-        void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+    //     const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[binding];
+    //     struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
+    //     void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
 
-        assert(desc->type == bind_layout->type);
+    //     assert(desc->type == bind_layout->type);
 
-        switch (desc->type)
-        {
-            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-            {
-                return (void *)(desc);
-            }
-            case VK_DESCRIPTOR_TYPE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-            {
-                return desc;
-            }
+    //     switch (desc->type)
+    //     {
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+    //         {
+    //             return (void *)(desc);
+    //         }
+    //         case VK_DESCRIPTOR_TYPE_SAMPLER:
+    //         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+    //         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+    //         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+    //         {
+    //             return desc;
+    //         }
 
-            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                assert(0);
-                break;
+    //         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+    //             assert(0);
+    //             break;
 
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-            {
-                if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
-                    desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
-                {
-                    // MRS_TODO: account for desc->offset?
-                    return anv_address_map(desc->buffer->address);
-                }
-                else
-                {
-                    struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
-                    return anv_address_map(bview->address);
-                }
-            }
+    //         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+    //         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+    //         {
+    //             if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+    //                 desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+    //             {
+    //                 // MRS_TODO: account for desc->offset?
+    //                 return anv_address_map(desc->buffer->address);
+    //             }
+    //             else
+    //             {
+    //                 struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
+    //                 return anv_address_map(bview->address);
+    //             }
+    //         }
 
-            case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
-                assert(0);
-                break;
+    //         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
+    //             assert(0);
+    //             break;
 
-            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
-            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
-            {
-                struct anv_address_range_descriptor *desc_data = desc_map;
-                return (void *)(desc_data->address);
-            }
+    //         case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+    //         case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+    //         {
+    //             struct anv_address_range_descriptor *desc_data = desc_map;
+    //             return (void *)(desc_data->address);
+    //         }
 
-            default:
-                assert(0);
-                break;
-        }
+    //         default:
+    //             assert(0);
+    //             break;
+    //     }
 
-        // return descriptors[setID][binding].address;
-    }
+    //     // return descriptors[setID][binding].address;
+    // }
 }
 
 void VulkanRayTracing::getTexture(struct anv_descriptor *desc, 
@@ -1981,11 +2055,12 @@ void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vbuffer, struct anv
 
     uint64_t* address = anv_address_map(vbuffer->buffer->address);
     uint64_t size = vbuffer->buffer->size;
-    VertexMeta->vertex_buffers[setID] = malloc(sizeof(float) * size);
-    VertexMeta->vertex_out[setID] = malloc(sizeof(float) * size);
+    assert(size % 4 == 0);
+
     VertexMeta->vertex_size[setID] = size;
-    VertexMeta->vertex_out_addr[setID] = malloc(sizeof(uint64_t) * size);
-    memcpy(VertexMeta->vertex_buffers[setID],address,size);
+    VertexMeta->vertex_count[setID] = size / 4;
+    VertexMeta->vertex_out_count[setID] = size / 4;
+    VertexMeta->vertex_out_size[setID] = size;
     // Data to dump
     FILE *fp,*mp;
     char *mesa_root = getenv("MESA_ROOT");
@@ -1995,8 +2070,8 @@ void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vbuffer, struct anv
     // Vertex data
     char fullPath[200];
     char metaPath[200];
-    snprintf(fullPath, sizeof(fullPath), "%s%s%d.vkvertexdata", mesa_root, filePath, setID);
-    snprintf(metaPath, sizeof(fullPath), "%s%s%d.vkvertexmeta", mesa_root, filePath, setID);
+    snprintf(fullPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexdata", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
+    snprintf(metaPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexmeta", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
     // File name format: setID_descID.vktexturedata
 
     fp = fopen(fullPath, "wb+");
@@ -2006,6 +2081,12 @@ void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vbuffer, struct anv
     fprintf(mp,"%u",pipeline->vb[setID].stride);
     fclose(mp);
 
+    u_int32_t *devPtr;
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
+    VertexMeta->vertex_addr[setID] = devPtr;
     // // Texture metadata
     // snprintf(fullPath, sizeof(fullPath), "%s%s%d.vktexturemetadata", mesa_root, filePath, setID);
     // fp = fopen(fullPath, "w+");
@@ -2025,7 +2106,7 @@ void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vbuffer, struct anv
     // fclose(fp);
 
 }
-void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t binding, VkDescriptorType type)
+void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t descID, uint32_t binding, VkDescriptorType type)
 {
     anv_descriptor *desc_offset = ((anv_descriptor*)((void*)desc)); // offset for raytracing_extended
     struct anv_image_view *image_view =  desc_offset->image_view;
@@ -2100,7 +2181,12 @@ void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID,
                                                  image->planes[0].surface.isl.row_pitch_B,
                                                  filter);
     fclose(fp);
-
+    u_int32_t *devPtr;
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size* sizeof(float));
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
+    setDescriptorSetFromLauncher(address,devPtr,setID,descID);
 }
 
 
@@ -2328,6 +2414,13 @@ void VulkanRayTracing::dump_descriptor_set(uint32_t setID, uint32_t descID, void
     fp = fopen(fullPath, "wb+");
     fwrite(address, 1, size, fp);
     fclose(fp);
+
+    u_int32_t *devPtr;
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
+    setDescriptorSetFromLauncher(address,devPtr,setID,descID);
 }
 
 
@@ -2366,7 +2459,7 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
             case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
             {
                 //return desc;
-                dumpTextures(desc, 0, i, desc->type);
+                dumpTextures(desc, 0, bind_layout->descriptor_index, i, desc->type);
                 break;
             }
 
