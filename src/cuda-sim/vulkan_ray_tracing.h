@@ -208,8 +208,8 @@ typedef struct vertex_metadata
     std::vector<struct anv_buffer *> index_buffer;
     std::vector<struct anv_buffer *> vertex_buffer;
     std::vector<std::vector<unsigned>> index_to_draw;
-    unsigned width;
-    unsigned height;
+    unsigned width = -1;
+    unsigned height = -1;
 }vertex_metadata;
 
 struct anv_descriptor_set;
@@ -275,6 +275,7 @@ public:
     static void invoke_gpgpusim();
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
     static void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer, struct anv_graphics_pipeline *pipeline);
+    static void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned size);
     static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr);
     static void VulkanRayTracing::saveVertexBuffer(struct anv_vertex_binding *ptr);
     static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t offset);

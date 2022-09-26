@@ -1234,6 +1234,9 @@ const bool writeImageBinary = true;
 
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline) {
+  // could be different for different type of FBO
+  VertexMeta->width = 1280;
+  VertexMeta->height = 720;
   // dump vertex buffer
   unsigned vertex_count = -1;
   for (unsigned i = 0; i < MAX_VBS; i++) {
@@ -1269,8 +1272,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     prim.push_back(index_buffer[i + 1]);
     prim.push_back(index_buffer[i + 2]);
     VertexMeta->index_to_draw.push_back(prim);
-    printf("triangle %u - [%u, %u, %u]\n", i, index_buffer[i],
-           index_buffer[i + 1], index_buffer[i + 2]);
+    // printf("triangle %u - [%u, %u, %u]\n", i, index_buffer[i],
+    //        index_buffer[i + 1], index_buffer[i + 2]);
   }
 
   gpgpu_context *ctx = GPGPU_Context();
@@ -1349,15 +1352,16 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
   struct CUstream_st *stream = 0;
   stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
-  // ctx->the_gpgpusim->g_stream_manager->push(op);
+  ctx->the_gpgpusim->g_stream_manager->push(op);
 
-  // fflush(stdout);
+  fflush(stdout);
 
-  // while (!op.is_done() && !op.get_kernel()->done()) {
-  //   printf("waiting for op to finish\n");
-  //   sleep(1);
-  //   continue;
-  // }
+  while (!op.is_done() && !op.get_kernel()->done()) {
+    printf("waiting for op to finish\n");
+    sleep(1);
+    continue;
+  }
+
   // vertex shader done
   context->get_device()->get_gpgpu()->memcpy_from_gpu(
       VertexMeta->vertex_out[0], VertexMeta->vertex_out_devptr[0],
@@ -1372,18 +1376,35 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   // vertex-post processing
   // tranform & clipping
   std::vector<std::vector<float>> vertex_ndc;
+  std::vector<std::vector<float>> vertex_view;
   for (unsigned i = 0; i < VertexMeta->vertex_out_count[0]; i = i + 4) {
     // transform to NDC space
-    std::vector<float> vertex;
-    vertex.push_back(VertexMeta->vertex_out[0][i] /
-                     VertexMeta->vertex_out[0][i + 3]);
-    vertex.push_back(VertexMeta->vertex_out[0][i + 1] /
-                     VertexMeta->vertex_out[0][i + 3]);
-    vertex.push_back(VertexMeta->vertex_out[0][i + 2] /
-                     VertexMeta->vertex_out[0][i + 3]);
-    vertex.push_back(VertexMeta->vertex_out[0][i + 3] /
-                     VertexMeta->vertex_out[0][i + 3]);
-    vertex_ndc.push_back(vertex);
+    std::vector<float> ndc;
+    std::vector<float> view;
+    float ndc_x =
+        (VertexMeta->vertex_out[0][i] / VertexMeta->vertex_out[0][i + 3]);
+    ndc.push_back(ndc_x);
+    float ndc_y =
+        (VertexMeta->vertex_out[0][i + 1] / VertexMeta->vertex_out[0][i + 3]);
+    ndc.push_back(ndc_y);
+    float ndc_z =
+        (VertexMeta->vertex_out[0][i + 2] / VertexMeta->vertex_out[0][i + 3]);
+    ndc.push_back(ndc_z);
+    float ndc_w =
+        (VertexMeta->vertex_out[0][i + 3] / VertexMeta->vertex_out[0][i + 3]);
+    ndc.push_back(ndc_w);
+    vertex_ndc.push_back(ndc);
+
+    // xw = (ndc_position.x + 1) * (width / 2) + x
+    // yw = (ndc_position.y + 1) * (height / 2 ) + y 
+    // depth = (ndc_position.z + 1) * (far-near) / 2 + near
+    float view_x = (ndc_x + 1) * (VertexMeta->width / 2);
+    view.push_back(view_x);
+    float view_y = (ndc_y + 1) * (VertexMeta->height / 2);
+    view.push_back(view_y);
+    float view_z = (ndc_z + 1) * ((1.0 - 0) / 2) + 0;
+    view.push_back(view_z);
+    vertex_view.push_back(view);
 
     // printf("transformed NDC vertex %u, [%f %f %f %f]\n", i, vertex[0],
     //        vertex[1], vertex[2], vertex[3]);
@@ -1396,40 +1417,107 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
            VertexMeta->index_to_draw.begin();
        index < VertexMeta->index_to_draw.end(); index++) {
     std::vector<std::vector<float>> vertexs;
-    for (std::vector<unsigned>::iterator edge = (*index).begin();
-         edge < (*index).end(); edge++) {
-      if ((vertex_ndc[*edge][0] > -1 && vertex_ndc[*edge][0] < 1) &&
-          (vertex_ndc[*edge][1] > -1 && vertex_ndc[*edge][1] < 1)) {
+    bool in_view = false;
+    for (unsigned i = 0; i < (*index).size(); i++) {
+      if (vertex_view[(*index)[i]][0] < 0) {
+        vertex_view[(*index)[i]][0] = 0;
+      } else if (vertex_view[(*index)[i]][0]  >= VertexMeta->width) {
+        vertex_view[(*index)[i]][0]  = VertexMeta->width - 1;
+      }
+      if (vertex_view[(*index)[i]][1]  < 0) {
+        vertex_view[(*index)[i]][1]  = 0;
+      } else if (vertex_view[(*index)[i]][1]  >= VertexMeta->height) {
+        vertex_view[(*index)[i]][1]  = VertexMeta->height - 1;
+      }
+      vertexs.push_back(vertex_view[(*index)[i]]);
+      if ((vertex_ndc[(*index)[i]][0] > -1 && vertex_ndc[(*index)[i]][0] < 1) &&
+          (vertex_ndc[(*index)[i]][1] > -1 && vertex_ndc[(*index)[i]][1] < 1)) {
         // edge is in the view
-        assert((unsigned)vertex_ndc[*edge][3] == 1);
-        vertexs.push_back(vertex_ndc[*edge]);
+        assert(vertex_ndc[(*index)[i]][3] == 1);
+        // save *view* coordinate
+        in_view = true;
       }
     }
 
-    if (vertexs.size() == 3) {
+    if (in_view) {
       // if (in_view == vertexs.size()) {
       primitives.push_back(vertexs);
     }
   }
-  printf("total survived primitives: %u\n", primitives.size());
+  printf("total primitives after clipping: %u\n", primitives.size());
+  // convert from NDC to view space
 
-  // read in framebuffer before & after, and do diff
-  FILE *fp, *mp;
-  char *mesa_root = getenv("MESA_ROOT");
-  char *filePath = "../fb/";
 
-  // Vertex data
-  char fullPath[200];
-  char metaPath[200];
-  snprintf(fullPath, sizeof(fullPath), "%s%s.vkvertexdata", mesa_root,
-           filePath);
-  // File name format: setID_descID.vktexturedata
+  std::string mesa_root = getenv("MESA_ROOT");
+  std::string filePath = "../fb/";
+  // just compare binary data. 
+  float *depth_before, *depth_after;
+  unsigned size = VertexMeta->width * VertexMeta->height * sizeof(float);
+  depth_before = malloc(size);
+  depth_after = malloc(size);
 
-  fp = fopen(fullPath, "wb+");
-  mp = fopen(metaPath, "w+");
-  fwrite(address, 1, size, fp);
+  // read in depth buffer before drawcall
+  VulkanRayTracing::read_binary_file(
+      // mesa_root + filePath + "rev0.bin", depth_before, size);
+      mesa_root + filePath + "depth_rev1_evt90.bin", depth_before, size);
+
+  // read in depth buffer after drawcall
+  VulkanRayTracing::read_binary_file(
+      mesa_root + filePath + "depth_rev2_evt100.bin", depth_after, size);
+      // mesa_root + filePath + "rev1.bin.bin", depth_after, size);
+
+  std::vector<unsigned> drawed_pixels;
+  for (unsigned i = 0; i < VertexMeta->width * VertexMeta->height; i++) {
+    // if (depth_before[i] != depth_after[i]) drawed_pixels.push_back(i);
+    if (memcmp(&depth_before[i],&depth_after[i],sizeof(float)) != 0) {
+      drawed_pixels.push_back(i);
+    }
+  }
+  printf("pixel draw in this drawcall - %u\n", drawed_pixels.size());
+
+  unsigned count = 0;
+  // draw masks
+  std::bitset<1280> x_drawed;
+  std::bitset<720> y_drawed;
+  for (std::vector<unsigned>::iterator pixel = drawed_pixels.begin();
+       pixel < drawed_pixels.end(); pixel++) {
+    unsigned x = (*pixel) % VertexMeta->width;
+    unsigned y = (*pixel) / VertexMeta->width;
+    x_drawed.set(x);
+    y_drawed.set(y);
+  }
+  std::vector<std::vector<std::vector<float>>> prims_to_draw;
+  for (unsigned i = 0; i < primitives.size(); i++) {
+    // primitives[i]: a prim (triangle) - three vertex
+    for (unsigned j = 0; j < primitives[i].size(); j++) {
+      // primitives[i][k]: a vertex - xyz
+      // becareful - float to unsigned. I'm not very sure what to do
+      unsigned x = primitives[i][j][0];
+      unsigned y = primitives[i][j][1];
+
+      if (x_drawed.test(x) &&
+          y_drawed.test(y)) {
+        printf("primitive %u drawn at [%u,%u]\n", i, primitives[i][j][0],
+               primitives[i][j][1]);
+        prims_to_draw.push_back(primitives[i]);
+        break;
+      }
+    }
+  }
+  printf("primitives to be shaded: %u\n", prims_to_draw.size());
+
 
   exit(0);
+}
+
+void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned size) {
+    // read in before
+  std::ifstream dataStream(path, std::fstream::in | std::fstream::binary);
+  if (!dataStream.is_open()) {
+    abort();
+  }
+  dataStream.read((char*) ptr, size);
+  dataStream.close();
 }
 
 void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr) {
@@ -2078,11 +2166,11 @@ void VulkanRayTracing::image_store(struct anv_descriptor* desc, uint32_t gl_Laun
 //     thread->RT_thread_data->variable_decleration_table.push_back(entry);
 // }
 
-void VulkanRayTracing::dumpVertex(struct anv_vertex_binding *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID) {
+void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID) {
 
 
-    uint64_t* address = anv_address_map(vbuffer->buffer->address);
-    uint64_t size = vbuffer->buffer->size;
+    uint64_t* address = anv_address_map(vbuffer->address);
+    uint64_t size = vbuffer->size;
     assert(size % 4 == 0);
 
     VertexMeta->vertex_size[setID] = size;
