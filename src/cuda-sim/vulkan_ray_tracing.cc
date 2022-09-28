@@ -1499,48 +1499,48 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   printf("pixel draw in this drawcall - %u\n", drawed_pixels.size());
 
   unsigned count = 0;
-  std::vector<std::vector<unsigned>> prims_to_draw;
-  for (unsigned i = 0; i < primitives.size(); i++) {
-    // primitives[i]: a prim (triangle) - three vertex
-    for (unsigned j = 0; j < primitives[i].size(); j++) {
-      unsigned x = vertex_screen[primitives[i][j]][0];
-      unsigned y = vertex_screen[primitives[i][j]][1];
-      printf("test %u at [%u,%u]\n", i, x, y);
-      if (drawed_pixels_mask.test(y * 1280 + x)) {
-        printf("primitive %u drawn at [%u,%u]\n", i, x, y);
-        prims_to_draw.push_back(primitives[i]);
-        break;
-      }
-    }
-  }
-  printf("primitives to be shaded: %u\n", prims_to_draw.size());
+//   std::vector<std::vector<unsigned>> prims_to_draw;
+//   for (unsigned i = 0; i < primitives.size(); i++) {
+//     // primitives[i]: a prim (triangle) - three vertex
+//     for (unsigned j = 0; j < primitives[i].size(); j++) {
+//       unsigned x = vertex_screen[primitives[i][j]][0];
+//       unsigned y = vertex_screen[primitives[i][j]][1];
+//       printf("test %u at [%u,%u]\n", i, x, y);
+//       if (drawed_pixels_mask.test(y * 1280 + x)) {
+//         printf("primitive %u drawn at [%u,%u]\n", i, x, y);
+//         prims_to_draw.push_back(primitives[i]);
+//         break;
+//       }
+//     }
+//   }
+//   printf("primitives to be shaded: %u\n", prims_to_draw.size());
 
   // rasterizer & prepare inputs to fragments shader
-  drawed_pixels_mask.reset();
+  std::bitset<1280*720> frags_mask;
   std::vector<std::vector<float>> in_pos;
   std::vector<std::vector<float>> in_uv;
   std::vector<std::vector<float>> in_normal;
 
   count = 0;
-  for (unsigned i = 0; i < prims_to_draw.size(); i++) {
+  for (unsigned i = 0; i < primitives.size(); i++) {
     // triangle only - for now
-    assert(prims_to_draw[i].size() == 3);
-    float x1 = vertex_screen[prims_to_draw[i][0]][0];
-    float y1 = vertex_screen[prims_to_draw[i][0]][1];
-    float x2 = vertex_screen[prims_to_draw[i][1]][0];
-    float y2 = vertex_screen[prims_to_draw[i][1]][1];
-    float x3 = vertex_screen[prims_to_draw[i][2]][0];
-    float y3 = vertex_screen[prims_to_draw[i][2]][1];
-    if (((x2-x1)*(y3-y2))-((y2-y1)*(x3-x2))<0) {
-      count++;
-      continue;
-    }
+    assert(primitives[i].size() == 3);
+    float x1 = vertex_screen[primitives[i][0]][0];
+    float y1 = vertex_screen[primitives[i][0]][1];
+    float x2 = vertex_screen[primitives[i][1]][0];
+    float y2 = vertex_screen[primitives[i][1]][1];
+    float x3 = vertex_screen[primitives[i][2]][0];
+    float y3 = vertex_screen[primitives[i][2]][1];
+    // if (((x2-x1)*(y3-y2))-((y2-y1)*(x3-x2))>0) {
+    //   count++;
+    //   continue;
+    // }
     std::vector<std::vector<unsigned>> frags = bresenham(x1,x2,x3,y1,y2,y3);
     for (unsigned j = 0; j < frags.size(); j++) {
       unsigned pixel_coord = frags[j][1] * 1280 + frags[j][0];
-      if (!drawed_pixels_mask.test(pixel_coord)) {
-        unsigned index = prims_to_draw[i][0];
-        drawed_pixels_mask.set(pixel_coord);
+      if (drawed_pixels_mask.test(pixel_coord) && !frags_mask.test(pixel_coord)) {
+        unsigned index = primitives[i][0];
+        frags_mask.set(pixel_coord);
         std::vector<float> pos;
         pos.push_back(frags[j][0]);
         pos.push_back(frags[j][1]);
@@ -1561,7 +1561,23 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     }
   }
 
-  printf("total frag - %u\n",drawed_pixels_mask.count());
+  printf("total frag - %u\n",frags_mask.count());
+
+  // save draw mask for debugging
+  float *depthout = malloc(sizeof(float) * 1280 * 720);
+  for (unsigned i = 0; i < 1280 * 720; i++) {
+    if (frags_mask.test(i)) {
+      printf("pixel disagree @ [%u, %u]\n", i / 1280, i % 1280);
+      depthout[i] = (0xFFFF);
+    } else {
+      depthout[i] = (0x0000);
+    }
+  }
+  FILE *fp = fopen("/home/pan251/vulkan-sim-root/fb/depthout.bin", "wb+");
+  fwrite(depthout, 1, sizeof(float) * 1280 * 720, fp);
+  fclose(fp);
+
+  // pixel shaders
 
   exit(0);
 }
