@@ -521,7 +521,18 @@ void warp_inst_t::generate_mem_accesses() {
         unsigned block_address = line_size_based_tag_func(addr, cache_block_size);
         accesses[block_address].set(thread);
         unsigned idx = addr - block_address;
-        for (unsigned i = 0; i < data_size; i++) byte_mask.set(idx + i);
+        for (unsigned i = 0; i < data_size; i++) {
+          if (idx + i < cache_block_size) {
+            byte_mask.set(idx + i);
+          } else {
+            unsigned block_address = line_size_based_tag_func(addr + cache_block_size, cache_block_size);
+            accesses[block_address].set(thread);
+            // for (unsigned j = 0; j < data_size - i; j++) { 
+            //   byte_mask.set(idx + j);
+            // }
+            break;
+          }
+        }
       }
     }
     TXL_DPRINTF("%d accesses found, pushed to m_accessq.\n", accesses.size());
