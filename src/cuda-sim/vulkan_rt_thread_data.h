@@ -91,20 +91,25 @@ typedef struct Vulkan_RT_thread_data {
         if (entry.address == 0)
           entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
       } else if (name == "\%field0" || name == "\%o_uv3" ||
-                 name == "\%o_normal4") {
+                 name == "\%o_normal4" || name == "\%in_normal" ||
+                 name == "%in_pos" || name == "\%in_uv") {
         unsigned buffer_index = -1;
-        if (name == "\%field0") {
+        if (name == "\%field0" || name == "%in_pos") {
           buffer_index = 0;
-        } else if (name == "\%o_uv3") {
+        } else if (name == "\%o_uv3" || name == "\%in_uv") {
           buffer_index = 1;
-        } else if (name == "\%o_normal4") {
+        } else if (name == "\%o_normal4" || name == "\%in_normal") {
           buffer_index = 2;
         }
         // assuming all vertex data are 4 byte
-        entry.address = VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        entry.address =
+            VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
         if (entry.address == 0)
           entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
 
+      } else if (name == "\%o_color") {
+        entry.address =
+            VulkanRayTracing::getFBOAddr(offset);
       } else {
         entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
       }

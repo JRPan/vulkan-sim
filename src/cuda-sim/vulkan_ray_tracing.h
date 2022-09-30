@@ -203,6 +203,10 @@ typedef struct vertex_metadata
     uint32_t vertex_out_size[MAX_VERTEX] = {0};
     uint32_t vertex_out_count[MAX_VERTEX] = {0};
     uint32_t vertex_out_stride[MAX_VERTEX] = {0};
+    uint32_t* fbo_devptr = {NULL};
+    uint32_t fbo_size = 0;
+    uint32_t fbo_count = 0;
+    uint32_t fbo_stride = 0;
     // std::bitset<47568> vertex_mask;
 
     std::vector<struct anv_buffer *> index_buffer;
@@ -285,6 +289,7 @@ public:
     static void VulkanRayTracing::saveVertexBuffer(struct anv_vertex_binding *ptr);
     static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t offset);
     static uint64_t getVertexOutAddr(uint32_t buffer_index, uint32_t offset);
+    static uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset);
     static void vkCmdTraceRaysKHR( // called by vulkan application
                       void *raygen_sbt,
                       void *miss_sbt,

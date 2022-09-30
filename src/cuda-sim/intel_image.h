@@ -103,7 +103,8 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
     isl_tiling isl_tiling_mode;
     uint32_t row_pitch_B;
     
-    if (use_external_launcher)
+    if (true)
+    // if (use_external_launcher)
     {
         texture_metadata *texture = (texture_metadata*) image;
         setID = texture->setID;
@@ -163,7 +164,8 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
 
             uint32_t offset = (tileID * (tileWidth * tileHeight) + blockID) * ASTC_block_size;
             
-            if (use_external_launcher)
+            if (true)
+            // if (use_external_launcher)
             {
                 transaction.address = deviceAddress + offset;
                 transaction.size = 128 / 8;
@@ -270,7 +272,8 @@ Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampl
 
     const struct anv_image *image;
     
-    if (use_external_launcher)
+    if (true)
+    // if (use_external_launcher)
     {
         texture_metadata *texture = (texture_metadata*) image_view;
         width = texture->width;

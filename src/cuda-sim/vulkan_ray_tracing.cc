@@ -1442,8 +1442,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     view.push_back(ndc_w);
     vertex_screen.push_back(view);
 
-    // printf("transformed NDC vertex %u, [%f %f %f %f]\n", i, vertex[0],
-    //        vertex[1], vertex[2], vertex[3]);
   }
   assert(vertex_screen.size() == vertex_count);
   assert(vertex_ndc.size() == vertex_count);
@@ -1577,7 +1575,61 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   fwrite(depthout, 1, sizeof(float) * 1280 * 720, fp);
   fclose(fp);
 
+  // create fbo
+  unsigned fbo_size = 4 * 1280*720;
+  float* fbo = malloc(fbo_size * sizeof(float));
+  VertexMeta->fbo_size = fbo_size * sizeof(float);
+  VertexMeta->fbo_count = fbo_size;
+  VertexMeta->fbo_stride = 16;
+  VertexMeta->fbo_devptr =
+      context->get_device()->get_gpgpu()->gpu_malloc(
+          VertexMeta->fbo_size);
+
   // pixel shaders
+  unsigned frag_count = frags_mask.count();
+  shader = shaders[1];
+  entry = context->get_kernel(shader.function_name);
+
+  if (entry->is_pdom_set()) {
+    printf("GPGPU-Sim PTX: PDOM analysis already done for %s \n",
+           entry->get_name().c_str());
+  } else {
+    printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n",
+           entry->get_name().c_str());
+    /*
+     * Some of the instructions like printf() gives the gpgpusim the wrong
+     * impression that it is a function call. As printf() doesnt have a body
+     * like functions do, doing pdom analysis for printf() causes a crash.
+     */
+    if (entry->get_function_size() > 0) entry->do_pdom();
+    entry->set_pdom();
+  }
+
+  n_return = entry->has_return();
+  n_args = entry->num_args();
+  // unsigned n_operands = pI->get_num_operands();
+
+  // launch_width = 1;
+  // launch_height = 1;
+  blockDim = dim3(64, 1, 1);
+  // dim3 gridDim = dim3(1, 1, 1);
+  gridDim = dim3((frag_count + 63) / 64, 1, 1);
+
+  grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+      shader.function_name, args, gridDim, blockDim, context);
+
+  stream = 0;
+
+  stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
+  ctx->the_gpgpusim->g_stream_manager->push(op);
+
+  fflush(stdout);
+
+  while (!op.is_done() && !op.get_kernel()->done()) {
+    printf("waiting for op to finish\n");
+    sleep(1);
+    continue;
+  }
 
   exit(0);
 }
@@ -1698,6 +1750,16 @@ uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
     return VertexMeta->vertex_out_devptr[buffer_index];
   }
   return VertexMeta->vertex_out_devptr[buffer_index] + offset;
+}
+
+uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
+  // vertex position buffer change from vec3 -> vec4
+  if (offset + VertexMeta->fbo_stride / 4 >
+      VertexMeta->fbo_count) {
+    // out of range
+    return VertexMeta->fbo_devptr;
+  }
+  return VertexMeta->fbo_devptr + offset;
 }
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(
@@ -2057,80 +2119,80 @@ void VulkanRayTracing::setDescriptorSetFromLauncher(void *address, void *deviceA
 
 void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
 {
-    return launcher_deviceDescriptorSets[setID][binding];
+    if (true)
     // if (use_external_launcher)
-    // {
-    //     return launcher_deviceDescriptorSets[setID][binding];
-    //     // return launcher_descriptorSets[setID][binding];
-    // }
-    // else 
-    // {
-    //     // assert(setID < descriptors.size());
-    //     // assert(binding < descriptors[setID].size());
+    {
+        return launcher_deviceDescriptorSets[setID][binding];
+        // return launcher_descriptorSets[setID][binding];
+    }
+    else 
+    {
+        // assert(setID < descriptors.size());
+        // assert(binding < descriptors[setID].size());
 
-    //     struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
+        struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
 
-    //     const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[binding];
-    //     struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
-    //     void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+        const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[binding];
+        struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
+        void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
 
-    //     assert(desc->type == bind_layout->type);
+        assert(desc->type == bind_layout->type);
 
-    //     switch (desc->type)
-    //     {
-    //         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-    //         {
-    //             return (void *)(desc);
-    //         }
-    //         case VK_DESCRIPTOR_TYPE_SAMPLER:
-    //         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-    //         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-    //         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-    //         {
-    //             return desc;
-    //         }
+        switch (desc->type)
+        {
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            {
+                return (void *)(desc);
+            }
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+            {
+                return desc;
+            }
 
-    //         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-    //         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-    //             assert(0);
-    //             break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                assert(0);
+                break;
 
-    //         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-    //         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-    //         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-    //         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-    //         {
-    //             if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
-    //                 desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
-    //             {
-    //                 // MRS_TODO: account for desc->offset?
-    //                 return anv_address_map(desc->buffer->address);
-    //             }
-    //             else
-    //             {
-    //                 struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
-    //                 return anv_address_map(bview->address);
-    //             }
-    //         }
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+            {
+                if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+                    desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+                {
+                    // MRS_TODO: account for desc->offset?
+                    return anv_address_map(desc->buffer->address);
+                }
+                else
+                {
+                    struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
+                    return anv_address_map(bview->address);
+                }
+            }
 
-    //         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
-    //             assert(0);
-    //             break;
+            case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
+                assert(0);
+                break;
 
-    //         case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
-    //         case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
-    //         {
-    //             struct anv_address_range_descriptor *desc_data = desc_map;
-    //             return (void *)(desc_data->address);
-    //         }
+            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+            {
+                struct anv_address_range_descriptor *desc_data = desc_map;
+                return (void *)(desc_data->address);
+            }
 
-    //         default:
-    //             assert(0);
-    //             break;
-    //     }
+            default:
+                assert(0);
+                break;
+        }
 
-    //     // return descriptors[setID][binding].address;
-    // }
+        // return descriptors[setID][binding].address;
+    }
 }
 
 void VulkanRayTracing::getTexture(struct anv_descriptor *desc, 
@@ -2141,7 +2203,8 @@ void VulkanRayTracing::getTexture(struct anv_descriptor *desc,
 {
     Pixel pixel;
 
-    if (use_external_launcher)
+    if (true)
+    // if (use_external_launcher)
     {
         pixel = get_interpolated_pixel((anv_image_view*) desc, (anv_sampler*) desc, x, y, transactions, launcher_offset); // cast back to metadata later
     }
@@ -2449,9 +2512,14 @@ void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID,
     u_int32_t *devPtr;
     gpgpu_context *ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
-    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size* sizeof(float));
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
-    setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
+    // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+    setTextureFromLauncher(address, devPtr, setID, descID, size,
+                           image_extent_width, image_extent_height, format,
+                           VkDescriptorTypeNum, image->n_planes, image->samples,
+                           image->tiling, image->planes[0].surface.isl.tiling,
+                           image->planes[0].surface.isl.row_pitch_B, filter);
 }
 
 

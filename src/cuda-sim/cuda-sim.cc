@@ -2022,11 +2022,11 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     }
 
     if (pI->get_opcode() == TEX_OP) {
-      inst.set_addr(lane_id, last_eaddr());
-      assert(inst.space == last_space());
-      insn_data_size = get_tex_datasize(
-          pI,
-          this);  // texture obtain its data granularity from the texture info
+      inst.set_addr(lane_id, last_eaddrs());
+      insn_space.set_type(tex_space);
+      inst.space = insn_space;
+      insn_data_size = last_size();
+      inst.data_size = insn_data_size;
     }
 
     else if (pI->get_opcode() == TXL_OP) {
