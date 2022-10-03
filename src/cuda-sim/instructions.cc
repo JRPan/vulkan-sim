@@ -3424,8 +3424,9 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     // printf("float value = %f\n", *((float*)addr64));
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
-    if (pI->source_line() == 54) {
-      printf("thread %u reading %f from %x\n",thread->get_uid()-1,data.f32,addr);
+    if (pI->source_line() == 205) {
+      unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * 64;
+      printf("thread %u reading %f from %x\n",thread_id,data.f32,addr);
     }
   } else {
     assert(0); //MRS_TODO: what happends here? turn this to 64 bit as well
@@ -5867,7 +5868,8 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
     if (pI->source_line() == 251) {
-      printf("thread %u writing %f to %x\n",thread->get_uid()-1,data.f32,addr);
+      unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * 64;
+      printf("thread %u writing %f to %x\n",thread_id,data.f32,addr);
     }
     mem->write(addr, size / 8, &data.s64, thread, pI);
     // assert(size == 32);
@@ -7144,7 +7146,9 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   } 
   else {
     // assuming every vertex data is 32-bit
-    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size, (thread->get_uid()-1) * size/4);
+    unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
+    // assert(thread_id == (thread->get_uid()-1));
+    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size, thread_id * size/4);
   }
 
   data.u64 = address;
