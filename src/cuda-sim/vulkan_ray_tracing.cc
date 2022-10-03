@@ -1232,7 +1232,7 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 const bool writeImageBinary = true;
 // checkpointing to we don't have to run vertex shader every time
-const bool start_from_checkpoint = false;
+const bool start_from_checkpoint = true;
 
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline) {
@@ -1503,72 +1503,96 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       drawed_pixels_mask.set(i);
     }
   }
-  printf("pixel draw in this drawcall - %u\n", drawed_pixels.size());
 
-  unsigned count = 0;
-
-  // rasterizer & prepare inputs to fragments shader
   std::bitset<1280*720> frags_mask;
   std::vector<std::vector<float>> in_pos;
   std::vector<std::vector<float>> in_uv;
   std::vector<std::vector<float>> in_normal;
-
-  count = 0;
-  for (unsigned i = 0; i < primitives.size(); i++) {
-    // triangle only - for now
-    assert(primitives[i].size() == 3);
-    float x1 = vertex_screen[primitives[i][0]][0];
-    float y1 = vertex_screen[primitives[i][0]][1];
-    float x2 = vertex_screen[primitives[i][1]][0];
-    float y2 = vertex_screen[primitives[i][1]][1];
-    float x3 = vertex_screen[primitives[i][2]][0];
-    float y3 = vertex_screen[primitives[i][2]][1];
-    // if (((x2-x1)*(y3-y2))-((y2-y1)*(x3-x2))>0) {
-    //   count++;
-    //   continue;
-    // }
-    std::vector<std::vector<unsigned>> frags = bresenham(x1,x2,x3,y1,y2,y3);
-    for (unsigned j = 0; j < frags.size(); j++) {
-      unsigned pixel_coord = frags[j][1] * 1280 + frags[j][0];
-      if (drawed_pixels_mask.test(pixel_coord) && !frags_mask.test(pixel_coord)) {
-        unsigned index = primitives[j][0];
-        frags_mask.set(pixel_coord);
+  printf("pixel draw in this drawcall - %u\n", drawed_pixels.size());
+  for (std::vector<unsigned>::iterator pixel = drawed_pixels.begin();
+       pixel < drawed_pixels.end(); pixel++) {
+    unsigned x = *pixel % VertexMeta->width;
+    unsigned y = *pixel / VertexMeta->width;
+    float error_x = VertexMeta->width;
+    float error_y = VertexMeta->height;
+    float error = VertexMeta->width * VertexMeta->height;
+    unsigned selected_vertex = -1;
+    for (std::vector<std::vector<unsigned>>::iterator prim = primitives.begin();
+         prim < primitives.end(); prim++) {
+      bool found = false;
+      for (std::vector<unsigned>::iterator vertex = (*prim).begin();
+           vertex < (*prim).end(); vertex++) {
+        // for each vertex in the index buffer
+        // just set error to some large value
+        if ((fabs(vertex_screen[(*vertex)][0] - x) < 0.5) &&
+            (fabs(vertex_screen[(*vertex)][1] - y) < 0.5) &&
+            vertex_screen[(*vertex)][2] > 0) {
+          in_pos.push_back(vertex_screen[(*vertex)]);
+          std::vector<float> tex;
+          tex.push_back(VertexMeta->vertex_out[1][2 * (*vertex)]);
+          tex.push_back(VertexMeta->vertex_out[1][2 * (*vertex) + 1]);
+          in_uv.push_back(tex);
+          std::vector<float> normal;
+          normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex)]);
+          normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex) + 1]);
+          normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex) + 2]);
+          in_normal.push_back(normal);
+          found = true;
+          frags_mask.set(*pixel);
+          break;
+        // } else if ((fabs(vertex_screen[(*vertex)][0] - x) < error_x) &&
+        //            (fabs(vertex_screen[(*vertex)][1] - y) < error_y)) {
+        } else if ((pow((vertex_screen[(*vertex)][0] - x), 2) +
+                    pow((vertex_screen[(*vertex)][1] - y), 2)) < error) {
+          error_x = fabs(vertex_screen[(*vertex)][0] - x);
+          error_y = fabs(vertex_screen[(*vertex)][1] - y);
+          error = pow((vertex_screen[(*vertex)][0] - x), 2) +
+                  pow((vertex_screen[(*vertex)][1] - y), 2);
+          selected_vertex = *vertex;
+        }
+      }
+      if (found) break;
+      if (prim == primitives.end() - 1) {
+        // last prim. Just use the closest vertex
         std::vector<float> pos;
-        pos.push_back(frags[j][0]);
-        pos.push_back(frags[j][1]);
-        pos.push_back(vertex_screen[index][2]);
-        pos.push_back(vertex_screen[index][3]);
+        pos.push_back(x);
+        pos.push_back(y);
+        pos.push_back(vertex_screen[selected_vertex][2]);
+        pos.push_back(vertex_screen[selected_vertex][3]);
         in_pos.push_back(pos);
-        // tex vec2
         std::vector<float> tex;
-        tex.push_back(VertexMeta->vertex_out[1][2*index]);
-        tex.push_back(VertexMeta->vertex_out[1][2*index + 1]);
+        tex.push_back(VertexMeta->vertex_out[1][2 * selected_vertex]);
+        tex.push_back(VertexMeta->vertex_out[1][2 * selected_vertex + 1]);
         in_uv.push_back(tex);
         std::vector<float> normal;
-        normal.push_back(VertexMeta->vertex_out[2][3 * index]);
-        normal.push_back(VertexMeta->vertex_out[2][3 * index + 1]);
-        normal.push_back(VertexMeta->vertex_out[2][3 * index + 2]);
+        normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex]);
+        normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex + 1]);
+        normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex + 2]);
         in_normal.push_back(normal);
+        found = true;
+        frags_mask.set(*pixel);
+        printf("cannot find exact match for pixel %u, using closest with error [x,y] [%f, %f]\n",*pixel,error_x,error_y);
+        break;
       }
     }
   }
 
-  printf("total frag - %u\n",frags_mask.count());
-
+  printf("total frags collected - %u\n",frags_mask.count());
   // save draw mask for debugging
   float *depthout = malloc(sizeof(float) * 1280 * 720);
-  for (unsigned i = 0; i < 1280 * 720; i++) {
-    if (frags_mask.test(i)) {
-      printf("pixel disagree @ [%u, %u]\n", i / 1280, i % 1280);
-      depthout[i] = (0xFFFF);
-    } else {
-      depthout[i] = (0x0000);
-    }
-  }
-  FILE *fp = fopen("/home/pan251/vulkan-sim-root/fb/depthout.bin", "wb+");
-  fwrite(depthout, 1, sizeof(float) * 1280 * 720, fp);
-  fclose(fp);
-  free(depthout);
+  // for (unsigned i = 0; i < 1280 * 720; i++) {
+  //   if (frags_mask.test(i)) {
+  //     printf("pixel disagree @ [%u, %u]\n", i / 1280, i % 1280);
+  //     depthout[i] = (0xFFFF);
+  //   } else {
+  //     depthout[i] = (0x0000);
+  //   }
+  // }
+  // FILE *fp = fopen("/home/pan251/vulkan-sim-root/fb/depthout.bin", "wb+");
+  // fwrite(depthout, 1, sizeof(float) * 1280 * 720, fp);
+  // fclose(fp);
+  // free(depthout);
+  FILE *fp;
 
   // create fbo
   unsigned fbo_size = 4 * 1280*720;
@@ -1666,31 +1690,27 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       fbo, VertexMeta->fbo_devptr,
       VertexMeta->fbo_size);
 
-  uint8_t *out = malloc(VertexMeta->fbo_size/4);  // each element is 8bit wide instead of 32bit
-  for (unsigned i = 0; i < VertexMeta->fbo_count / 4; i++) {
-    uint8_t r = (uint8_t)(fbo[4 * i] * 0xFF);
-    uint8_t g = (uint8_t)(fbo[4 * i + 1] * 0xFF);
-    uint8_t b = (uint8_t)(fbo[4 * i + 2] * 0xFF);
-    uint8_t a = (uint8_t)(fbo[4 * i + 3] * 0xFF);
-    out[i] = r;
-    out[i + 1] = g;
-    out[i + 2] = b;
-    out[i + 3] = a;
-    if (a != 0) {
-      printf("pixel %u color: [%u, %u, %u, %u]\n",i,r,g,b,a);
+  uint8_t *out = malloc(VertexMeta->fbo_size/4);
+  for (unsigned i = 0; i < VertexMeta->fbo_count; i += 4) {
+    out[i] = linearRGB_to_SRGB(fbo[i]) * 255;
+    out[i + 1] = linearRGB_to_SRGB(fbo[i + 1]) * 255;
+    out[i + 2] = linearRGB_to_SRGB(fbo[i + 2]) * 255;
+    out[i + 3] = linearRGB_to_SRGB(fbo[i + 3]) * 255;
+    if (fbo[i+3] != 0) {
+      printf("pixel draw at %u, [%u,%u,%u,%u]\n",i/4,out[i],out[i+1],out[i+2],out[i+3]);
     }
   }
-
   fp = fopen((mesa_root + filePath + "fbo_out.bin").c_str(), "wb+");
+  // fwrite(fbo, 1, VertexMeta->fbo_size, fp);
   fwrite(out, 1, VertexMeta->fbo_size/4, fp);
   fclose(fp);
 
   depthout = malloc(sizeof(float) * 1280 * 720);
   for (unsigned i = 0; i < VertexMeta->fbo_count/4; i ++) {
     if (fbo[4*i] != 0 || fbo[4*i+1] != 0 || fbo[4*i+2] != 0 || fbo[4*i+3] != 0) {
-      depthout[i] = (0xFFFF);
+      depthout[i] = (1.0);
     } else {
-      depthout[i] = (0x0000);
+      depthout[i] = (0.0);
     }
 
   }
@@ -1699,7 +1719,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   fclose(fp);
   free(depthout);
 
-    system("rm -rf /home/pan251/vulkan-sim-root/mesa-vulkan-sim/gpgpusimShaders/");
+    // system("rm -rf /home/pan251/vulkan-sim-root/mesa-vulkan-sim/gpgpusimShaders/");
 //   exit(0);
 }
 

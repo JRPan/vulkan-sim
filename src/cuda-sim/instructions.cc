@@ -4506,7 +4506,10 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       assert(0);
       break;
   }
-
+  if (pI->source_line() == 189) {
+      unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * 64;
+      printf("thread %u doing mul, %f = %f * %f\n",thread_id,d.f32,a.f32,b.f32);
+    }
   thread->set_operand_value(dst, d, i_type, thread, pI);
 }
 
