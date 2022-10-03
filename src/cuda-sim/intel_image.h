@@ -185,9 +185,13 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             uint8_t* pixel_color = &dst_colors[0] + ((x % 8) + (y % 8) * 8) * 4;
 
             Pixel pixel;
-            pixel.r = SRGB_to_linearRGB(pixel_color[0] / 255.0);
-            pixel.g = SRGB_to_linearRGB(pixel_color[1] / 255.0);
-            pixel.b = SRGB_to_linearRGB(pixel_color[2] / 255.0);
+            // pixel.r = SRGB_to_linearRGB(pixel_color[0] / 255.0);
+            // pixel.g = SRGB_to_linearRGB(pixel_color[1] / 255.0);
+            // pixel.b = SRGB_to_linearRGB(pixel_color[2] / 255.0);
+            // pixel.a = pixel_color[3] / 255.0;
+            pixel.r = (pixel_color[0] / 255.0);
+            pixel.g = (pixel_color[1] / 255.0);
+            pixel.b = (pixel_color[2] / 255.0);
             pixel.a = pixel_color[3] / 255.0;
             return pixel;
         }

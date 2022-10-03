@@ -209,8 +209,7 @@ typedef struct vertex_metadata
     uint32_t fbo_stride = 0;
     // std::bitset<47568> vertex_mask;
 
-    std::vector<struct anv_buffer *> index_buffer;
-    std::vector<struct anv_buffer *> vertex_buffer;
+    struct anv_buffer* index_buffer = NULL;
     std::vector<std::vector<unsigned>> index_to_draw;
     unsigned width = -1;
     unsigned height = -1;
@@ -286,7 +285,6 @@ public:
         unsigned y3);
     static void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned size);
     static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr);
-    static void VulkanRayTracing::saveVertexBuffer(struct anv_vertex_binding *ptr);
     static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t offset);
     static uint64_t getVertexOutAddr(uint32_t buffer_index, uint32_t offset);
     static uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset);
