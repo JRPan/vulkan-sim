@@ -1250,8 +1250,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     FBO->fbo_size = 4 * FBO_WIDTH * FBO_HEIGHT * sizeof(float);
     FBO->fbo_count = 4 * FBO_WIDTH * FBO_HEIGHT;
     FBO->fbo_stride = 16;
-    FBO->fbo = malloc(FBO->fbo_size);
-    FBO->depthout = malloc(FBO->fbo_size / 4);
+    FBO->fbo = new float[FBO->fbo_count];
+    FBO->depthout = new float [FBO->fbo_count / 4];
     FBO->fbo_dev = context->get_device()->get_gpgpu()->gpu_malloc(FBO->fbo_size);
   }
   assert(FBO->fbo);
@@ -1296,19 +1296,19 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
 
   // fk it just static set vertex output size for now
-  VertexMeta->vertex_out[0] = malloc(VertexMeta->vertex_out_size[0]);
+  VertexMeta->vertex_out[0] = new float[VertexMeta->vertex_out_count[0]];
   // device pointer
   VertexMeta->vertex_out_devptr[0] =
       context->get_device()->get_gpgpu()->gpu_malloc(
           VertexMeta->vertex_out_size[0]);
 
-  VertexMeta->vertex_out[1] = malloc(VertexMeta->vertex_out_size[1]);
+  VertexMeta->vertex_out[1] = new float[VertexMeta->vertex_out_count[1]];
   // device pointer
   VertexMeta->vertex_out_devptr[1] =
       context->get_device()->get_gpgpu()->gpu_malloc(
           VertexMeta->vertex_out_size[1]);
 
-  VertexMeta->vertex_out[2] = malloc(VertexMeta->vertex_out_size[2]);
+  VertexMeta->vertex_out[2] = new float [VertexMeta->vertex_out_count[2]];
   // device pointer
   VertexMeta->vertex_out_devptr[2] =
       context->get_device()->get_gpgpu()->gpu_malloc(
@@ -1494,9 +1494,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   std::string filePath = "../fb/depth_buffer/";
   // just compare binary data. 
   float *depth_before, *depth_after;
+  depth_before = new float[FBO_WIDTH * FBO_HEIGHT];
+  depth_after = new float[FBO_WIDTH * FBO_HEIGHT];
   unsigned size = FBO_WIDTH * FBO_HEIGHT * sizeof(float);
-  depth_before = malloc(size);
-  depth_after = malloc(size);
 
   // read in depth buffer before drawcall
   VulkanRayTracing::read_binary_file(
@@ -1517,8 +1517,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       drawed_pixels_mask.set(i);
     }
   }
-  free(depth_after);
-  free(depth_before);
+  delete(depth_after);
+  delete(depth_before);
 
   std::bitset<FBO_WIDTH * FBO_HEIGHT> frags_mask;
   std::vector<std::vector<float>> in_pos;
@@ -1612,9 +1612,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   VertexMeta->vertex_out_stride[2] = in_normal[0].size();
   VertexMeta->vertex_out_size[2] = in_normal.size() * in_normal[0].size() * sizeof(float);
 
-  VertexMeta->vertex_out[0] = malloc(VertexMeta->vertex_out_size[0]);
-  VertexMeta->vertex_out[1] = malloc(VertexMeta->vertex_out_size[1]);
-  VertexMeta->vertex_out[2] = malloc(VertexMeta->vertex_out_size[2]);
+  VertexMeta->vertex_out[0] = new float[VertexMeta->vertex_out_count[0]];
+  VertexMeta->vertex_out[1] = new float[VertexMeta->vertex_out_count[1]];
+  VertexMeta->vertex_out[2] = new float[VertexMeta->vertex_out_count[2]];
 
   for (unsigned i = 0; i < in_pos.size(); i++) {
     for (unsigned j = 0; j < in_pos[i].size(); j++) {
@@ -1682,7 +1682,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   context->get_device()->get_gpgpu()->memcpy_from_gpu(FBO->fbo, FBO->fbo_dev,
                                                       FBO->fbo_size);
 
-  uint8_t *out = malloc(FBO->fbo_size/4);
+  uint8_t *out = new uint8_t[FBO->fbo_count];
   for (unsigned i = 0; i < FBO->fbo_count; i += 4) {
     out[i] = linearRGB_to_SRGB(FBO->fbo[i]) * 255;
     out[i + 1] = linearRGB_to_SRGB(FBO->fbo[i + 1]) * 255;
@@ -1694,7 +1694,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   fp = fopen((fbo_file + ".bin").c_str(), "wb+");
   fwrite(out, 1, FBO->fbo_size/4, fp);
   fclose(fp);
-  free(out);
+  delete(out);
   std::string fbo_cmd = "convert -depth 8 -size 1280x720+0 rgba:" + fbo_file +
                         ".bin " + fbo_file + ".jpg";
   system(fbo_cmd.c_str());
@@ -1718,9 +1718,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   system(depth_cmd.c_str());
   system(("rm " + depth_file + ".bin").c_str());
   draw++;
-  free(VertexMeta->vertex_out[0]);
-  free(VertexMeta->vertex_out[1]);
-  free(VertexMeta->vertex_out[2]);
+  delete(VertexMeta->vertex_out[0]);
+  delete(VertexMeta->vertex_out[1]);
+  delete(VertexMeta->vertex_out[2]);
   delete(VertexMeta);
   
   VertexMeta = new struct vertex_metadata();
