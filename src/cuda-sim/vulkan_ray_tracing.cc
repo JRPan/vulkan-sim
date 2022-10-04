@@ -108,6 +108,7 @@ bool VulkanRayTracing::dumped = false;
 
 bool use_external_launcher = false;
 struct vertex_metadata* VulkanRayTracing::VertexMeta = new struct vertex_metadata;
+struct FBO* VulkanRayTracing::FBO = new struct FBO;
 
 bool VulkanRayTracing::_init_ = false;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
@@ -1230,15 +1231,33 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 // int CmdTraceRaysKHRID = 0;
 
+#define FBO_WIDTH 1280
+#define FBO_HEIGHT 720
 const bool writeImageBinary = true;
 // checkpointing to we don't have to run vertex shader every time
-const bool start_from_checkpoint = true;
-
+const bool start_from_checkpoint = false;
+unsigned draw = 0;
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline) {
+  if (draw < 0) {
+    draw++;
+    return;
+  }
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  // create fbo
+  if (!FBO->fbo) {
+    FBO->fbo_size = 4 * FBO_WIDTH * FBO_HEIGHT * sizeof(float);
+    FBO->fbo_count = 4 * FBO_WIDTH * FBO_HEIGHT;
+    FBO->fbo_stride = 16;
+    FBO->fbo = malloc(FBO->fbo_size);
+    FBO->depthout = malloc(FBO->fbo_size / 4);
+    FBO->fbo_dev = context->get_device()->get_gpgpu()->gpu_malloc(FBO->fbo_size);
+  }
+  assert(FBO->fbo);
+  assert(FBO->depthout);
+  assert(FBO->fbo_dev);
   // could be different for different type of FBO
-  VertexMeta->width = 1280;
-  VertexMeta->height = 720;
   // dump vertex buffer
   unsigned vertex_count = -1;
   for (unsigned i = 0; i < MAX_VBS; i++) {
@@ -1274,12 +1293,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     prim.push_back(index_buffer[i + 1]);
     prim.push_back(index_buffer[i + 2]);
     VertexMeta->index_to_draw.push_back(prim);
-    // printf("triangle %u - [%u, %u, %u]\n", i, index_buffer[i],
-    //        index_buffer[i + 1], index_buffer[i + 2]);
   }
 
-  gpgpu_context *ctx = GPGPU_Context();
-  CUctx_st *context = GPGPUSim_Context(ctx);
   // fk it just static set vertex output size for now
   VertexMeta->vertex_out[0] = malloc(VertexMeta->vertex_out_size[0]);
   // device pointer
@@ -1312,8 +1327,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     imageFile.open(imageFileName, std::ios::out | std::ios::binary);
 
     // imageFile.open("image.txt", std::ios::out);
-  } else
-    return;
+  }
 
   ctx->func_sim->g_total_shaders = shaders.size();
 
@@ -1432,18 +1446,18 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     // xw = (ndc_position.x + 1) * (width / 2) + x
     // yw = (ndc_position.y + 1) * (height / 2 ) + y 
     // depth = (ndc_position.z + 1) * (far-near) / 2 + near
-    float screen_x = (ndc_x + 1) * (VertexMeta->width / 2);
+    float screen_x = (ndc_x + 1) * (FBO_WIDTH / 2);
     if (screen_x < 0) {
       screen_x = 0;
-    } else if (screen_x >= VertexMeta->width) {
-      screen_x = VertexMeta->width - 1;
+    } else if (screen_x >= FBO_WIDTH) {
+      screen_x = FBO_WIDTH - 1;
     }
     view.push_back(screen_x);
-    float screen_y = (ndc_y + 1) * (VertexMeta->height / 2);
+    float screen_y = (ndc_y + 1) * (FBO_HEIGHT / 2);
     if (screen_y < 0) {
       screen_y = 0;
-    } else if (screen_y >= VertexMeta->height) {
-      screen_y = VertexMeta->height - 1;
+    } else if (screen_y >= FBO_HEIGHT) {
+      screen_y = FBO_HEIGHT - 1;
     }
     view.push_back(screen_y);
     float view_z = (ndc_z + 1) * ((1.0 - 0) / 2) + 0;
@@ -1477,45 +1491,47 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
 
   std::string mesa_root = getenv("MESA_ROOT");
-  std::string filePath = "../fb/";
+  std::string filePath = "../fb/depth_buffer/";
   // just compare binary data. 
   float *depth_before, *depth_after;
-  unsigned size = VertexMeta->width * VertexMeta->height * sizeof(float);
+  unsigned size = FBO_WIDTH * FBO_HEIGHT * sizeof(float);
   depth_before = malloc(size);
   depth_after = malloc(size);
 
   // read in depth buffer before drawcall
   VulkanRayTracing::read_binary_file(
-      // mesa_root + filePath + "rev0.bin", depth_before, size);
-      mesa_root + filePath + "depth_rev1_evt90.bin", depth_before, size);
+      mesa_root + filePath + "depth_" + std::to_string(draw) + ".bin",
+      depth_before, size);
 
   // read in depth buffer after drawcall
   VulkanRayTracing::read_binary_file(
-      mesa_root + filePath + "depth_rev2_evt100.bin", depth_after, size);
-      // mesa_root + filePath + "rev1.bin.bin", depth_after, size);
+      mesa_root + filePath + "depth_" + std::to_string(draw + 1) + ".bin",
+      depth_after, size);
 
   std::vector<unsigned> drawed_pixels;
-  std::bitset<1280*720> drawed_pixels_mask;
-  for (unsigned i = 0; i < VertexMeta->width * VertexMeta->height; i++) {
+  std::bitset<FBO_WIDTH * FBO_HEIGHT> drawed_pixels_mask;
+  for (unsigned i = 0; i < FBO_WIDTH * FBO_HEIGHT; i++) {
     // if (depth_before[i] != depth_after[i]) drawed_pixels.push_back(i);
     if (memcmp(&depth_before[i],&depth_after[i],sizeof(float)) != 0) {
       drawed_pixels.push_back(i);
       drawed_pixels_mask.set(i);
     }
   }
+  free(depth_after);
+  free(depth_before);
 
-  std::bitset<1280*720> frags_mask;
+  std::bitset<FBO_WIDTH * FBO_HEIGHT> frags_mask;
   std::vector<std::vector<float>> in_pos;
   std::vector<std::vector<float>> in_uv;
   std::vector<std::vector<float>> in_normal;
   printf("pixel draw in this drawcall - %u\n", drawed_pixels.size());
   for (std::vector<unsigned>::iterator pixel = drawed_pixels.begin();
        pixel < drawed_pixels.end(); pixel++) {
-    unsigned x = *pixel % VertexMeta->width;
-    unsigned y = *pixel / VertexMeta->width;
-    float error_x = VertexMeta->width;
-    float error_y = VertexMeta->height;
-    float error = VertexMeta->width * VertexMeta->height;
+    unsigned x = *pixel % FBO_WIDTH;
+    unsigned y = *pixel / FBO_WIDTH;
+    float error_x = FBO_WIDTH;
+    float error_y = FBO_HEIGHT;
+    float error = FBO_WIDTH * FBO_HEIGHT;
     unsigned selected_vertex = -1;
     for (std::vector<std::vector<unsigned>>::iterator prim = primitives.begin();
          prim < primitives.end(); prim++) {
@@ -1579,30 +1595,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
   printf("total frags collected - %u\n",frags_mask.count());
   // save draw mask for debugging
-  float *depthout = malloc(sizeof(float) * 1280 * 720);
-  // for (unsigned i = 0; i < 1280 * 720; i++) {
-  //   if (frags_mask.test(i)) {
-  //     printf("pixel disagree @ [%u, %u]\n", i / 1280, i % 1280);
-  //     depthout[i] = (0xFFFF);
-  //   } else {
-  //     depthout[i] = (0x0000);
-  //   }
-  // }
-  // FILE *fp = fopen("/home/pan251/vulkan-sim-root/fb/depthout.bin", "wb+");
-  // fwrite(depthout, 1, sizeof(float) * 1280 * 720, fp);
-  // fclose(fp);
-  // free(depthout);
   FILE *fp;
-
-  // create fbo
-  unsigned fbo_size = 4 * 1280*720;
-  float* fbo = malloc(fbo_size * sizeof(float));
-  VertexMeta->fbo_size = fbo_size * sizeof(float);
-  VertexMeta->fbo_count = fbo_size;
-  VertexMeta->fbo_stride = 16;
-  VertexMeta->fbo_devptr =
-      context->get_device()->get_gpgpu()->gpu_malloc(
-          VertexMeta->fbo_size);
 
   // copy vertex data to gpu
   free(VertexMeta->vertex_out[0]);
@@ -1686,41 +1679,55 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
 
   // copy back framebuffer and dump
-  context->get_device()->get_gpgpu()->memcpy_from_gpu(
-      fbo, VertexMeta->fbo_devptr,
-      VertexMeta->fbo_size);
+  context->get_device()->get_gpgpu()->memcpy_from_gpu(FBO->fbo, FBO->fbo_dev,
+                                                      FBO->fbo_size);
 
-  uint8_t *out = malloc(VertexMeta->fbo_size/4);
-  for (unsigned i = 0; i < VertexMeta->fbo_count; i += 4) {
-    out[i] = linearRGB_to_SRGB(fbo[i]) * 255;
-    out[i + 1] = linearRGB_to_SRGB(fbo[i + 1]) * 255;
-    out[i + 2] = linearRGB_to_SRGB(fbo[i + 2]) * 255;
-    out[i + 3] = linearRGB_to_SRGB(fbo[i + 3]) * 255;
-    if (fbo[i+3] != 0) {
-      printf("pixel draw at %u, [%u,%u,%u,%u]\n",i/4,out[i],out[i+1],out[i+2],out[i+3]);
-    }
+  uint8_t *out = malloc(FBO->fbo_size/4);
+  for (unsigned i = 0; i < FBO->fbo_count; i += 4) {
+    out[i] = linearRGB_to_SRGB(FBO->fbo[i]) * 255;
+    out[i + 1] = linearRGB_to_SRGB(FBO->fbo[i + 1]) * 255;
+    out[i + 2] = linearRGB_to_SRGB(FBO->fbo[i + 2]) * 255;
+    out[i + 3] = linearRGB_to_SRGB(FBO->fbo[i + 3]) * 255;
   }
-  fp = fopen((mesa_root + filePath + "fbo_out.bin").c_str(), "wb+");
-  // fwrite(fbo, 1, VertexMeta->fbo_size, fp);
-  fwrite(out, 1, VertexMeta->fbo_size/4, fp);
+  std::string fbo_file =
+      mesa_root + "../fb/" + "fbo_out_" + std::to_string(draw);
+  fp = fopen((fbo_file + ".bin").c_str(), "wb+");
+  fwrite(out, 1, FBO->fbo_size/4, fp);
   fclose(fp);
+  free(out);
+  std::string fbo_cmd = "convert -depth 8 -size 1280x720+0 rgba:" + fbo_file +
+                        ".bin " + fbo_file + ".jpg";
+  system(fbo_cmd.c_str());
+  system(("rm " + fbo_file + ".bin").c_str());
 
-  depthout = malloc(sizeof(float) * 1280 * 720);
-  for (unsigned i = 0; i < VertexMeta->fbo_count/4; i ++) {
-    if (fbo[4*i] != 0 || fbo[4*i+1] != 0 || fbo[4*i+2] != 0 || fbo[4*i+3] != 0) {
-      depthout[i] = (1.0);
+  for (unsigned i = 0; i < FBO->fbo_count/4; i ++) {
+    if (FBO->fbo[4*i] != 0 || FBO->fbo[4*i+1] != 0 || FBO->fbo[4*i+2] != 0 || FBO->fbo[4*i+3] != 0) {
+      FBO->depthout[i] = (1.0);
     } else {
-      depthout[i] = (0.0);
+      FBO->depthout[i] = (0.0);
     }
 
   }
-  fp = fopen("/home/pan251/vulkan-sim-root/fb/depthout.bin", "wb+");
-  fwrite(depthout, 1, sizeof(float) * 1280 * 720, fp);
+  std::string depth_file =
+      mesa_root + "../fb/" + "depth_out_" + std::to_string(draw);
+  fp = fopen((depth_file + ".bin").c_str(), "wb+");
+  fwrite(FBO->depthout, 1, FBO->fbo_size/4, fp);
   fclose(fp);
-  free(depthout);
+  std::string depth_cmd = "convert -depth 32 -size 1280x720+0 gray:" + depth_file +
+                        ".bin " + depth_file + ".jpg";
+  system(depth_cmd.c_str());
+  system(("rm " + depth_file + ".bin").c_str());
+  draw++;
+  free(VertexMeta->vertex_out[0]);
+  free(VertexMeta->vertex_out[1]);
+  free(VertexMeta->vertex_out[2]);
+  delete(VertexMeta);
+  
+  VertexMeta = new struct vertex_metadata();
+  
 
-    // system("rm -rf /home/pan251/vulkan-sim-root/mesa-vulkan-sim/gpgpusimShaders/");
-//   exit(0);
+  // system("rm -rf /home/pan251/vulkan-sim-root/mesa-vulkan-sim/gpgpusimShaders/");
+  // exit(0);
 }
 
 std::vector<std::vector<unsigned>> VulkanRayTracing::bresenham(
@@ -1841,13 +1848,13 @@ uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
   // get pixel coord 
   unsigned x = *(VertexMeta->vertex_out[0] + offset);
   unsigned y = *(VertexMeta->vertex_out[0] + offset + 1);
-  unsigned coord = y * VertexMeta->width + x;
+  unsigned coord = y * FBO_WIDTH + x;
 
-  if (coord >= VertexMeta->fbo_count) {
+  if (coord >= FBO->fbo_count) {
     // out of range
-    return VertexMeta->fbo_devptr;
+    return FBO->fbo_dev;
   }
-  return VertexMeta->fbo_devptr + coord * 4;
+  return FBO->fbo_dev + coord * 4;
 }
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(

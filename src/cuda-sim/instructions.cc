@@ -3424,10 +3424,6 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
     // printf("float value = %f\n", *((float*)addr64));
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
-    if (pI->source_line() == 205) {
-      unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * 64;
-      printf("thread %u reading %f from %x\n",thread_id,data.f32,addr);
-    }
   } else {
     assert(0); //MRS_TODO: what happends here? turn this to 64 bit as well
     ptx_reg_t data1, data2, data3, data4;
@@ -4506,10 +4502,6 @@ void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       assert(0);
       break;
   }
-  if (pI->source_line() == 189) {
-      unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * 64;
-      printf("thread %u doing mul, %f = %f * %f\n",thread_id,d.f32,a.f32,b.f32);
-    }
   thread->set_operand_value(dst, d, i_type, thread, pI);
 }
 
@@ -5870,10 +5862,6 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
-    if (pI->source_line() == 251) {
-      unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * 64;
-      printf("thread %u writing %f to %x\n",thread_id,data.f32,addr);
-    }
     mem->write(addr, size / 8, &data.s64, thread, pI);
     // assert(size == 32);
     // memcpy(address, &data.s64, size / 8);

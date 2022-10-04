@@ -203,10 +203,6 @@ typedef struct vertex_metadata
     uint32_t vertex_out_size[MAX_VERTEX] = {0};
     uint32_t vertex_out_count[MAX_VERTEX] = {0};
     uint32_t vertex_out_stride[MAX_VERTEX] = {0};
-    uint32_t* fbo_devptr = {NULL};
-    uint32_t fbo_size = 0;
-    uint32_t fbo_count = 0;
-    uint32_t fbo_stride = 0;
     // std::bitset<47568> vertex_mask;
 
     struct anv_buffer* index_buffer = NULL;
@@ -214,6 +210,15 @@ typedef struct vertex_metadata
     unsigned width = -1;
     unsigned height = -1;
 }vertex_metadata;
+
+typedef struct FBO {
+  float *fbo = NULL;
+  float *fbo_dev = NULL;
+  float *depthout = NULL;
+  unsigned fbo_size = 0;
+  unsigned fbo_count = 0;
+  unsigned fbo_stride = 0;
+} FBO;
 
 struct anv_descriptor_set;
 struct anv_descriptor;
@@ -230,8 +235,7 @@ private:
     static bool firstTime;
     static struct anv_descriptor_set *descriptorSet;
     static struct vertex_metadata *VertexMeta;
-    // static void* vertex_buffers[28];
-    // static void* vertex_out[28];
+    static struct FBO *FBO;
 
     // For Launcher
     static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
