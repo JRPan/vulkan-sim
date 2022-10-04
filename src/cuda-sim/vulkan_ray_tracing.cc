@@ -1684,8 +1684,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   fwrite(out, 1, FBO->fbo_size/4, fp);
   fclose(fp);
   delete(out);
-  std::string fbo_cmd = "convert -depth 8 -size 1280x720+0 rgba:" + fbo_file +
-                        ".bin " + fbo_file + ".jpg";
+  std::string fbo_cmd = "convert -depth 8 -size " + std::to_string(FBO->width) +
+                        "x" + std::to_string(FBO->height) +
+                        "+0 rgba:" + fbo_file + ".bin " + fbo_file + ".jpg";
   system(fbo_cmd.c_str());
   system(("rm " + fbo_file + ".bin").c_str());
 
@@ -1702,8 +1703,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   fp = fopen((depth_file + ".bin").c_str(), "wb+");
   fwrite(FBO->depthout, 1, FBO->fbo_size/4, fp);
   fclose(fp);
-  std::string depth_cmd = "convert -depth 32 -size 1280x720+0 gray:" + depth_file +
-                        ".bin " + depth_file + ".jpg";
+  std::string depth_cmd =
+      "convert -depth 32 -size " + std::to_string(FBO->width) + "x" +
+      std::to_string(FBO->height) + "+0 gray:" + depth_file + ".bin " +
+      depth_file + ".jpg";
   system(depth_cmd.c_str());
   system(("rm " + depth_file + ".bin").c_str());
   draw++;
