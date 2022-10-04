@@ -1231,15 +1231,16 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 // int CmdTraceRaysKHRID = 0;
 
-#define FBO_WIDTH 1280
-#define FBO_HEIGHT 720
 const bool writeImageBinary = true;
 // checkpointing to we don't have to run vertex shader every time
 const bool start_from_checkpoint = false;
 unsigned draw = 0;
+#define DRAW_START 0
+#define DRAW_END 25
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
-                                 struct anv_graphics_pipeline *pipeline) {
-  if (draw < 0) {
+                                 struct anv_graphics_pipeline *pipeline, 
+                                 VkViewport *viewports) {
+  if (draw < DRAW_START || draw > DRAW_END) {
     draw++;
     return;
   }
@@ -1247,8 +1248,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   CUctx_st *context = GPGPUSim_Context(ctx);
   // create fbo
   if (!FBO->fbo) {
-    FBO->fbo_size = 4 * FBO_WIDTH * FBO_HEIGHT * sizeof(float);
-    FBO->fbo_count = 4 * FBO_WIDTH * FBO_HEIGHT;
+    FBO->width = viewports[0].width;
+    FBO->height = viewports[0].height;
+    FBO->x = viewports[0].x;
+    FBO->y = viewports[0].y;
+    FBO->fbo_size = 4 * FBO->width * FBO->height * sizeof(float);
+    FBO->fbo_count = 4 * FBO->width * FBO->height;
     FBO->fbo_stride = 16;
     FBO->fbo = new float[FBO->fbo_count];
     FBO->depthout = new float [FBO->fbo_count / 4];
@@ -1349,20 +1354,11 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     entry->set_pdom();
   }
 
-  unsigned n_return = entry->has_return();
-  unsigned n_args = entry->num_args();
-  // unsigned n_operands = pI->get_num_operands();
-
-  // launch_width = 1;
-  // launch_height = 1;
   dim3 blockDim = dim3(64, 1, 1);
   // dim3 gridDim = dim3(1, 1, 1);
   dim3 gridDim = dim3((vertex_count + 63) / 64, 1, 1);
 
   gpgpu_ptx_sim_arg_list_t args;
-  // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
-  //   raygen_shader.function_name, args, dim3(4, 128, 1), dim3(32, 1, 1),
-  //   context);
   kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
       shader.function_name, args, gridDim, blockDim, context);
 
@@ -1446,18 +1442,18 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     // xw = (ndc_position.x + 1) * (width / 2) + x
     // yw = (ndc_position.y + 1) * (height / 2 ) + y 
     // depth = (ndc_position.z + 1) * (far-near) / 2 + near
-    float screen_x = (ndc_x + 1) * (FBO_WIDTH / 2);
+    float screen_x = (ndc_x + 1) * (FBO->width / 2) + FBO->x;
     if (screen_x < 0) {
       screen_x = 0;
-    } else if (screen_x >= FBO_WIDTH) {
-      screen_x = FBO_WIDTH - 1;
+    } else if (screen_x >= FBO->width) {
+      screen_x = FBO->width - 1;
     }
     view.push_back(screen_x);
-    float screen_y = (ndc_y + 1) * (FBO_HEIGHT / 2);
+    float screen_y = (ndc_y + 1) * (FBO->height / 2) + FBO->y;
     if (screen_y < 0) {
       screen_y = 0;
-    } else if (screen_y >= FBO_HEIGHT) {
-      screen_y = FBO_HEIGHT - 1;
+    } else if (screen_y >= FBO->height) {
+      screen_y = FBO->height - 1;
     }
     view.push_back(screen_y);
     float view_z = (ndc_z + 1) * ((1.0 - 0) / 2) + 0;
@@ -1494,9 +1490,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   std::string filePath = "../fb/depth_buffer/";
   // just compare binary data. 
   float *depth_before, *depth_after;
-  depth_before = new float[FBO_WIDTH * FBO_HEIGHT];
-  depth_after = new float[FBO_WIDTH * FBO_HEIGHT];
-  unsigned size = FBO_WIDTH * FBO_HEIGHT * sizeof(float);
+  depth_before = new float[FBO->width * FBO->height];
+  depth_after = new float[FBO->width * FBO->height];
+  unsigned size = FBO->width * FBO->height * sizeof(float);
 
   // read in depth buffer before drawcall
   VulkanRayTracing::read_binary_file(
@@ -1509,91 +1505,86 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       depth_after, size);
 
   std::vector<unsigned> drawed_pixels;
-  std::bitset<FBO_WIDTH * FBO_HEIGHT> drawed_pixels_mask;
-  for (unsigned i = 0; i < FBO_WIDTH * FBO_HEIGHT; i++) {
+  std::vector<std::vector<float>> in_pos;
+  std::vector<std::vector<float>> in_uv;
+  std::vector<std::vector<float>> in_normal;
+  for (unsigned pixel = 0; pixel < FBO->width * FBO->height; pixel++) {
     // if (depth_before[i] != depth_after[i]) drawed_pixels.push_back(i);
-    if (memcmp(&depth_before[i],&depth_after[i],sizeof(float)) != 0) {
-      drawed_pixels.push_back(i);
-      drawed_pixels_mask.set(i);
+    if (memcmp(&depth_before[pixel],&depth_after[pixel],sizeof(float)) != 0) {
+      drawed_pixels.push_back(pixel);
+      unsigned x = pixel % FBO->width;
+      unsigned y = pixel / FBO->width;
+      float error_x = FBO->width;
+      float error_y = FBO->height;
+      float error = FBO->width * FBO->height;
+      unsigned selected_vertex = -1;
+      for (std::vector<std::vector<unsigned>>::iterator prim =
+               primitives.begin();
+           prim < primitives.end(); prim++) {
+        bool found = false;
+        for (std::vector<unsigned>::iterator vertex = (*prim).begin();
+             vertex < (*prim).end(); vertex++) {
+          // for each vertex in the index buffer
+          // just set error to some large value
+          if ((fabs(vertex_screen[(*vertex)][0] - x) < 0.5) &&
+              (fabs(vertex_screen[(*vertex)][1] - y) < 0.5) &&
+              vertex_screen[(*vertex)][2] > 0) {
+            in_pos.push_back(vertex_screen[(*vertex)]);
+            std::vector<float> tex;
+            tex.push_back(VertexMeta->vertex_out[1][2 * (*vertex)]);
+            tex.push_back(VertexMeta->vertex_out[1][2 * (*vertex) + 1]);
+            in_uv.push_back(tex);
+            std::vector<float> normal;
+            normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex)]);
+            normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex) + 1]);
+            normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex) + 2]);
+            in_normal.push_back(normal);
+            found = true;
+            break;
+            // } else if ((fabs(vertex_screen[(*vertex)][0] - x) < error_x) &&
+            //            (fabs(vertex_screen[(*vertex)][1] - y) < error_y)) {
+          } else if ((pow((vertex_screen[(*vertex)][0] - x), 2) +
+                      pow((vertex_screen[(*vertex)][1] - y), 2)) < error) {
+            error_x = fabs(vertex_screen[(*vertex)][0] - x);
+            error_y = fabs(vertex_screen[(*vertex)][1] - y);
+            error = pow((vertex_screen[(*vertex)][0] - x), 2) +
+                    pow((vertex_screen[(*vertex)][1] - y), 2);
+            selected_vertex = *vertex;
+          }
+        }
+        if (found) break;
+        if (prim == primitives.end() - 1) {
+          // last prim. Just use the closest vertex
+          std::vector<float> pos;
+          pos.push_back(x);
+          pos.push_back(y);
+          pos.push_back(vertex_screen[selected_vertex][2]);
+          pos.push_back(vertex_screen[selected_vertex][3]);
+          in_pos.push_back(pos);
+          std::vector<float> tex;
+          tex.push_back(VertexMeta->vertex_out[1][2 * selected_vertex]);
+          tex.push_back(VertexMeta->vertex_out[1][2 * selected_vertex + 1]);
+          in_uv.push_back(tex);
+          std::vector<float> normal;
+          normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex]);
+          normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex + 1]);
+          normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex + 2]);
+          in_normal.push_back(normal);
+          found = true;
+          printf(
+              "cannot find exact match for pixel %u, using closest with error "
+              "[x,y] [%f, %f]\n",
+              pixel, error_x, error_y);
+          break;
+        }
+      }
     }
   }
   delete(depth_after);
   delete(depth_before);
 
-  std::bitset<FBO_WIDTH * FBO_HEIGHT> frags_mask;
-  std::vector<std::vector<float>> in_pos;
-  std::vector<std::vector<float>> in_uv;
-  std::vector<std::vector<float>> in_normal;
-  printf("pixel draw in this drawcall - %u\n", drawed_pixels.size());
-  for (std::vector<unsigned>::iterator pixel = drawed_pixels.begin();
-       pixel < drawed_pixels.end(); pixel++) {
-    unsigned x = *pixel % FBO_WIDTH;
-    unsigned y = *pixel / FBO_WIDTH;
-    float error_x = FBO_WIDTH;
-    float error_y = FBO_HEIGHT;
-    float error = FBO_WIDTH * FBO_HEIGHT;
-    unsigned selected_vertex = -1;
-    for (std::vector<std::vector<unsigned>>::iterator prim = primitives.begin();
-         prim < primitives.end(); prim++) {
-      bool found = false;
-      for (std::vector<unsigned>::iterator vertex = (*prim).begin();
-           vertex < (*prim).end(); vertex++) {
-        // for each vertex in the index buffer
-        // just set error to some large value
-        if ((fabs(vertex_screen[(*vertex)][0] - x) < 0.5) &&
-            (fabs(vertex_screen[(*vertex)][1] - y) < 0.5) &&
-            vertex_screen[(*vertex)][2] > 0) {
-          in_pos.push_back(vertex_screen[(*vertex)]);
-          std::vector<float> tex;
-          tex.push_back(VertexMeta->vertex_out[1][2 * (*vertex)]);
-          tex.push_back(VertexMeta->vertex_out[1][2 * (*vertex) + 1]);
-          in_uv.push_back(tex);
-          std::vector<float> normal;
-          normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex)]);
-          normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex) + 1]);
-          normal.push_back(VertexMeta->vertex_out[2][3 * (*vertex) + 2]);
-          in_normal.push_back(normal);
-          found = true;
-          frags_mask.set(*pixel);
-          break;
-        // } else if ((fabs(vertex_screen[(*vertex)][0] - x) < error_x) &&
-        //            (fabs(vertex_screen[(*vertex)][1] - y) < error_y)) {
-        } else if ((pow((vertex_screen[(*vertex)][0] - x), 2) +
-                    pow((vertex_screen[(*vertex)][1] - y), 2)) < error) {
-          error_x = fabs(vertex_screen[(*vertex)][0] - x);
-          error_y = fabs(vertex_screen[(*vertex)][1] - y);
-          error = pow((vertex_screen[(*vertex)][0] - x), 2) +
-                  pow((vertex_screen[(*vertex)][1] - y), 2);
-          selected_vertex = *vertex;
-        }
-      }
-      if (found) break;
-      if (prim == primitives.end() - 1) {
-        // last prim. Just use the closest vertex
-        std::vector<float> pos;
-        pos.push_back(x);
-        pos.push_back(y);
-        pos.push_back(vertex_screen[selected_vertex][2]);
-        pos.push_back(vertex_screen[selected_vertex][3]);
-        in_pos.push_back(pos);
-        std::vector<float> tex;
-        tex.push_back(VertexMeta->vertex_out[1][2 * selected_vertex]);
-        tex.push_back(VertexMeta->vertex_out[1][2 * selected_vertex + 1]);
-        in_uv.push_back(tex);
-        std::vector<float> normal;
-        normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex]);
-        normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex + 1]);
-        normal.push_back(VertexMeta->vertex_out[2][3 * selected_vertex + 2]);
-        in_normal.push_back(normal);
-        found = true;
-        frags_mask.set(*pixel);
-        printf("cannot find exact match for pixel %u, using closest with error [x,y] [%f, %f]\n",*pixel,error_x,error_y);
-        break;
-      }
-    }
-  }
-
-  printf("total frags collected - %u\n",frags_mask.count());
+  assert(drawed_pixels.size() == in_pos.size());
+  printf("total frags collected - %u\n",drawed_pixels.size());
   // save draw mask for debugging
   FILE *fp;
 
@@ -1638,7 +1629,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       VertexMeta->vertex_out_size[2]);
 
   // pixel shaders
-  unsigned frag_count = frags_mask.count();
+  unsigned frag_count = in_pos.size();
   shader = shaders[1];
   entry = context->get_kernel(shader.function_name);
 
@@ -1657,8 +1648,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     entry->set_pdom();
   }
 
-  n_return = entry->has_return();
-  n_args = entry->num_args();
   blockDim = dim3(64, 1, 1);
   gridDim = dim3((frag_count + 63) / 64, 1, 1);
 
@@ -1848,7 +1837,7 @@ uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
   // get pixel coord 
   unsigned x = *(VertexMeta->vertex_out[0] + offset);
   unsigned y = *(VertexMeta->vertex_out[0] + offset + 1);
-  unsigned coord = y * FBO_WIDTH + x;
+  unsigned coord = y * FBO->width + x;
 
   if (coord >= FBO->fbo_count) {
     // out of range

@@ -218,6 +218,10 @@ typedef struct FBO {
   unsigned fbo_size = 0;
   unsigned fbo_count = 0;
   unsigned fbo_stride = 0;
+  unsigned width = -1;
+  unsigned height = -1;
+  unsigned x = -1;
+  unsigned y = -1;
 } FBO;
 
 struct anv_descriptor_set;
@@ -283,7 +287,8 @@ public:
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
     static void VulkanRayTracing::vkCmdDraw(
         struct anv_vertex_binding *vbuffer,
-        struct anv_graphics_pipeline *pipeline);
+        struct anv_graphics_pipeline *pipeline,
+        struct VkViewport *viewports);
     static std::vector<std::vector<unsigned>> VulkanRayTracing::bresenham(
         unsigned x1, unsigned x2, unsigned x3, unsigned y1, unsigned y2,
         unsigned y3);
