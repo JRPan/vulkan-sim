@@ -1236,17 +1236,21 @@ const bool writeImageBinary = true;
 const bool start_from_checkpoint = false;
 unsigned draw = 0;
 #define DRAW_START 0
-#define DRAW_END 25
+#define DRAW_END 0
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline, 
                                  VkViewport *viewports) {
-  if (draw < DRAW_START || draw > DRAW_END) {
+  if (draw < DRAW_START) {
     draw++;
     return;
+  }
+  if (draw > DRAW_END) {
+    exit(0);
   }
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
   // create fbo
+  printf("Starting Drawcall #%u\n", draw);
   if (!FBO->fbo) {
     FBO->width = viewports[0].width;
     FBO->height = viewports[0].height;
@@ -1322,17 +1326,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   if (!use_external_launcher) {
     dump_descriptor_sets(VulkanRayTracing::descriptorSet);
   }
-  if (writeImageBinary && !imageFile.is_open()) {
-    char *imageFileName;
-    char defaultFileName[40] = "image.binary";
-    if (getenv("VULKAN_IMAGE_FILE_NAME"))
-      imageFileName = getenv("VULKAN_IMAGE_FILE_NAME");
-    else
-      imageFileName = defaultFileName;
-    imageFile.open(imageFileName, std::ios::out | std::ios::binary);
-
-    // imageFile.open("image.txt", std::ios::out);
-  }
 
   ctx->func_sim->g_total_shaders = shaders.size();
 
@@ -1378,6 +1371,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
 
   // vertex shader done
+  // copy vertex back and do post processing
   context->get_device()->get_gpgpu()->memcpy_from_gpu(
       VertexMeta->vertex_out[0], VertexMeta->vertex_out_devptr[0],
       VertexMeta->vertex_out_size[0]);
@@ -1619,14 +1613,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     }
   }
   context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[0], VertexMeta->vertex_out[0],
-      VertexMeta->vertex_out_size[0]);
+      VertexMeta->vertex_out_devptr[2], VertexMeta->vertex_out[2],
+      VertexMeta->vertex_out_size[2]);
   context->get_device()->get_gpgpu()->memcpy_to_gpu(
       VertexMeta->vertex_out_devptr[1], VertexMeta->vertex_out[1],
       VertexMeta->vertex_out_size[1]);
   context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[2], VertexMeta->vertex_out[2],
-      VertexMeta->vertex_out_size[2]);
+      VertexMeta->vertex_out_devptr[0], VertexMeta->vertex_out[0],
+      VertexMeta->vertex_out_size[0]);
+  
 
   // pixel shaders
   unsigned frag_count = in_pos.size();
@@ -1709,6 +1704,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       depth_file + ".jpg";
   system(depth_cmd.c_str());
   system(("rm " + depth_file + ".bin").c_str());
+  printf("Drawcall #%u Done\n", draw);
   draw++;
   delete(VertexMeta->vertex_out[0]);
   delete(VertexMeta->vertex_out[1]);

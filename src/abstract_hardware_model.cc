@@ -39,6 +39,7 @@
 #include "gpgpu-sim/gpu-sim.h"
 #include "gpgpusim_entrypoint.h"
 #include "option_parser.h"
+#include "ptx.tab.h"
 
 void mem_access_t::init(gpgpu_context *ctx) {
   gpgpu_ctx = ctx;
@@ -3039,15 +3040,228 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
 }
 
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
+  const ptx_instruction *pI;
+  std::stringstream addr_str;
+  addr_str << std::hex;
+  int mem_count;
+  
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
       if (warpId == (unsigned(-1))) warpId = inst.warp_id();
       unsigned tid = m_warp_size * warpId + t;
+      pI = m_thread[tid]->func_info()->get_instruction(inst.pc);
       m_thread[tid]->ptx_exec_inst(inst, t);
+      mem_count = m_thread[tid]->m_last_effective_addresses.size();
 
       // virtual function
       checkExecutionStatusAndUpdate(inst, t, tid);
     }
+  }
+  // print out ptx traces
+  assert(pI);
+  std::stringstream active_string, pc_string, sass,inreg,outreg;
+  active_string << std::setfill('0') << std::setw(8) << std::hex
+                << inst.get_warp_active_mask().to_ulong();
+  pc_string << std::hex << std::setfill('0') << std::setw(4) << inst.pc;
+  // m_gpu->gtrace << pI->get_source() << std::endl;
+  sass << inst.dynamic_warp_id() << ", ";
+  sass << pc_string.str() << " " << active_string.str() << " ";
+
+  // output reg
+  sass << inst.outcount << " ";
+  for (int i = 0; i < inst.outcount; i++) {
+    sass << "R" << inst.out[i] << " ";
+  }
+  // opcode
+  switch (pI->get_opcode()) {
+    // ignored
+    case LD_RAY_LAUNCH_ID_OP...CALL_ANY_HIT_SHADER_OP:
+    case RET_OP:
+      return;
+    default:
+      break;
+  }
+  switch (pI->get_opcode()) {
+    case LD_OP: {
+      sass << "LD.SYS";
+      break;
+    }
+    case ST_OP: {
+      sass << "ST.SYS";
+      break;
+    }
+    case SETP_OP: {
+      unsigned cmpop = pI->get_cmpop();
+      sass << "ISETP";
+      switch (cmpop) {
+        case NE_OPTION:
+          // NE
+          // Not sure how to include the header here to use enum
+          sass << ".NE.AND";
+          break;
+        case LE_OPTION:
+          sass << ".LE.AND";
+          break;
+        case EQ_OPTION:
+          sass << ".EQ.AND";
+          break;
+        default:
+          assert(0);
+      }
+      break;
+    }
+    case EXIT_OP: {
+      sass << "EXIT";
+      break;
+    }
+    case MUL_OP:
+    {
+      unsigned i_type = pI->get_type();
+      if (i_type == F32_TYPE) {
+        sass << "FMUL";
+      } else {
+        assert(0);
+      }
+      break;
+    }
+    case MAD_OP: {
+      unsigned i_type = pI->get_type();
+      if (i_type == F32_TYPE) {
+        sass << "FFMA";
+      } else {
+        assert(0);
+      }
+      break;
+    }
+    case ADD_OP: {
+      unsigned i_type = pI->get_type();
+      if (i_type == F32_TYPE) {
+        sass << "FADD";
+      } else if (i_type == U64_TYPE || i_type == U32_TYPE) {
+        sass << "IADD";
+      }
+      else {
+        assert(0);
+      }
+      break;
+    }
+    case MOV_OP: {
+      sass << "MOV";
+      break;
+    }
+    case TEX_OP: {
+      sass << "TEX";
+      break;
+    }
+    case RCP_OP: {
+      sass << "MUFU.RCP";
+      break;
+    }
+    case RSQRT_OP: {
+      sass << "MUFU.SQRT";
+      break;
+    }
+    case MAX_OP:
+    case MIN_OP: {
+      unsigned i_type = pI->get_type();
+      if (i_type == F32_TYPE) {
+        sass << "FMNMX";
+      } else {
+        assert(0);
+      }
+      break;
+    }
+    case SET_OP: {
+       if (pI->get_type() == F32_TYPE) {
+        sass << "FSET";
+       } else {
+        sass << "ISET";
+       }
+       break;
+    }
+    case SHR_OP: {
+      sass << "SHR";
+      break;
+    }
+    case CVT_OP: {
+      unsigned to_type = pI->get_type();
+      unsigned from_type = pI->get_type2();
+      unsigned rounding_mode = pI->rounding_mode();
+      if (to_type == F32_TYPE && from_type == F32_TYPE) {
+        sass << "F2F";
+      } else if (to_type == F32_TYPE && from_type == S32_TYPE) {
+        sass << "I2F";
+      } else {
+        assert(0);
+      }
+      break;
+    }
+    case NEG_OP: {
+      sass << "MUFU";
+      break;
+    }
+      
+    default:
+      // implement this
+      printf("ERROR: opcode not implemented\n");
+      assert(0);
+  }
+  sass << " ";
+
+  // input reg
+  sass << inst.incount << " ";
+  for (int i = 0; i < inst.incount; i++) {
+    sass << "R" << inst.in[i] << " ";
+  }
+  // mem
+  switch (pI->get_opcode()) {
+    case LD_OP:
+    case ST_OP:
+      for (unsigned t = 0; t < m_warp_size; t++) {
+        if (inst.active(t)) {
+          unsigned tid = m_warp_size * warpId + t;
+          addr_str << "0x" << m_thread[tid]->last_eaddr() << " ";
+        }
+      }
+      // 4 byte/thread, no compression
+      sass << "4 0 " << addr_str.str();
+      break;
+    case TEX_OP:
+      // tex has muptiple mem addr
+      for (int i = 0; i < mem_count; i++) {
+        std::stringstream tex_addr;
+        tex_addr << std::hex;
+        for (unsigned t = 0; t < m_warp_size; t++) {
+          if (inst.active(t)) {
+            unsigned tid = m_warp_size * warpId + t;
+            // assert(mem_count ==
+            //        m_thread[tid]->m_last_effective_address.getCount());
+            tex_addr << "0x" << m_thread[tid]->last_eaddrs()[i] << " ";
+          }
+        }
+        m_gpu->gtrace << inst.dynamic_warp_id() << ", ";
+        m_gpu->gtrace << pc_string.str() << " " << active_string.str() << " ";
+        m_gpu->gtrace << "1 " << "R" << inst.in[i] << " ";
+        m_gpu->gtrace << "TEX" << " ";
+        m_gpu->gtrace << inst.incount << " ";
+        for (int i = 0; i < inst.incount; i++) {
+          m_gpu->gtrace << "R" << inst.in[i] << " ";
+        }
+        m_gpu->gtrace << "4 0 " << tex_addr.str();
+        m_gpu->gtrace << std::endl;
+      }
+      break;
+    default:
+      // no mem addr for others
+      // can't be load or store, ld/st must have addr
+      assert(!pI->is_load());
+      assert(!pI->is_store());
+      sass << "0 ";
+  }
+  if (pI->get_opcode() != TEX_OP) {
+    // TEX has multiple addrs. handled seperately
+    m_gpu->gtrace << sass.str();
+    m_gpu->gtrace << std::endl;
   }
 }
 

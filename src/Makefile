@@ -51,7 +51,7 @@ else
 	CXXFLAGS += 
 endif
 
-CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include
+CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include -I$(SIM_OBJ_FILES_DIR)/cuda-sim
 
 OPTFLAGS += -g3 -fPIC
 

@@ -955,6 +955,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   // Jin: functional simulation for CDP
   m_functional_sim = false;
   m_functional_sim_kernel = NULL;
+  gtrace.open("traces.traceg");
 }
 
 int gpgpu_sim::shared_mem_size() const {
