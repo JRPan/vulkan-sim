@@ -1231,12 +1231,32 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 // int CmdTraceRaysKHRID = 0;
 
+float sign(std::vector<float> p1, std::vector<float> p2,
+           std::vector<float> p3) {
+  return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1]);
+}
+
+bool PointInTriangle(std::vector<float> pt, std::vector<float> v1,
+                     std::vector<float> v2, std::vector<float> v3) {
+  float d1, d2, d3;
+  bool has_neg, has_pos;
+
+  d1 = sign(pt, v1, v2);
+  d2 = sign(pt, v2, v3);
+  d3 = sign(pt, v3, v1);
+
+  has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+  has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+
+  return !(has_neg && has_pos);
+}
+
 const bool writeImageBinary = true;
 // checkpointing to we don't have to run vertex shader every time
 const bool start_from_checkpoint = false;
 unsigned draw = 0;
 #define DRAW_START 0
-#define DRAW_END 0
+#define DRAW_END 20
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline, 
                                  VkViewport *viewports) {
@@ -1304,7 +1324,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     VertexMeta->index_to_draw.push_back(prim);
   }
 
-  // fk it just static set vertex output size for now
   VertexMeta->vertex_out[0] = new float[VertexMeta->vertex_out_count[0]];
   // device pointer
   VertexMeta->vertex_out_devptr[0] =
@@ -1437,18 +1456,18 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     // yw = (ndc_position.y + 1) * (height / 2 ) + y 
     // depth = (ndc_position.z + 1) * (far-near) / 2 + near
     float screen_x = (ndc_x + 1) * (FBO->width / 2) + FBO->x;
-    if (screen_x < 0) {
-      screen_x = 0;
-    } else if (screen_x >= FBO->width) {
-      screen_x = FBO->width - 1;
-    }
+    // if (screen_x < 0) {
+    //   screen_x = 0;
+    // } else if (screen_x >= FBO->width) {
+    //   screen_x = FBO->width - 1;
+    // }
     view.push_back(screen_x);
     float screen_y = (ndc_y + 1) * (FBO->height / 2) + FBO->y;
-    if (screen_y < 0) {
-      screen_y = 0;
-    } else if (screen_y >= FBO->height) {
-      screen_y = FBO->height - 1;
-    }
+    // if (screen_y < 0) {
+    //   screen_y = 0;
+    // } else if (screen_y >= FBO->height) {
+    //   screen_y = FBO->height - 1;
+    // }
     view.push_back(screen_y);
     float view_z = (ndc_z + 1) * ((1.0 - 0) / 2) + 0;
     view.push_back(view_z);
@@ -1467,6 +1486,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
            VertexMeta->index_to_draw.begin();
        index < VertexMeta->index_to_draw.end(); index++) {
     for (unsigned i = 0; i < (*index).size(); i++) {
+      float x1 = vertex_screen[(*index)[0]][0];
+      float y1 = vertex_screen[(*index)[0]][1];
+      float x2 = vertex_screen[(*index)[1]][0];
+      float y2 = vertex_screen[(*index)[1]][1];
+      float x3 = vertex_screen[(*index)[2]][0];
+      float y3 = vertex_screen[(*index)[2]][1];
+      if (((x2 - x1) * (y3 - y2)) - ((y2 - y1) * (x3 - x2)) > 0) {
+        continue;
+      }
       if ((vertex_ndc[(*index)[i]][0] > -1 && vertex_ndc[(*index)[i]][0] < 1) &&
           (vertex_ndc[(*index)[i]][1] > -1 && vertex_ndc[(*index)[i]][1] < 1)) {
         // edge is in the view
@@ -1503,7 +1531,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   std::vector<std::vector<float>> in_uv;
   std::vector<std::vector<float>> in_normal;
   for (unsigned pixel = 0; pixel < FBO->width * FBO->height; pixel++) {
-    // if (depth_before[i] != depth_after[i]) drawed_pixels.push_back(i);
     if (memcmp(&depth_before[pixel],&depth_after[pixel],sizeof(float)) != 0) {
       drawed_pixels.push_back(pixel);
       unsigned x = pixel % FBO->width;
@@ -1512,6 +1539,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       float error_y = FBO->height;
       float error = FBO->width * FBO->height;
       unsigned selected_vertex = -1;
+      unsigned closest_vertex = -1;
+      std::vector<std::vector<unsigned>> all;
       for (std::vector<std::vector<unsigned>>::iterator prim =
                primitives.begin();
            prim < primitives.end(); prim++) {
@@ -1521,8 +1550,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
           // for each vertex in the index buffer
           // just set error to some large value
           if ((fabs(vertex_screen[(*vertex)][0] - x) < 0.5) &&
-              (fabs(vertex_screen[(*vertex)][1] - y) < 0.5) &&
-              vertex_screen[(*vertex)][2] > 0) {
+              (fabs(vertex_screen[(*vertex)][1] - y) < 0.5)) {
             in_pos.push_back(vertex_screen[(*vertex)]);
             std::vector<float> tex;
             tex.push_back(VertexMeta->vertex_out[1][2 * (*vertex)]);
@@ -1537,18 +1565,52 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
             break;
             // } else if ((fabs(vertex_screen[(*vertex)][0] - x) < error_x) &&
             //            (fabs(vertex_screen[(*vertex)][1] - y) < error_y)) {
-          } else if ((pow((vertex_screen[(*vertex)][0] - x), 2) +
+          } else {
+            std::vector<float> pos;
+            pos.push_back(x);
+            pos.push_back(y);
+            if (PointInTriangle(
+                    pos, vertex_screen[(*prim)[0]],
+                    vertex_screen[(*prim)[1]], vertex_screen[(*prim)[2]])) {
+              // error_x = fabs(vertex_screen[(*vertex)][0] - x);
+              // error_y = fabs(vertex_screen[(*vertex)][1] - y);
+              // error = pow((vertex_screen[(*vertex)][0] - x), 2) +
+              //         pow((vertex_screen[(*vertex)][1] - y), 2);
+              selected_vertex = (*prim)[0];
+              all.push_back(*prim);
+              break;
+            }
+            if ((pow((vertex_screen[(*vertex)][0] - x), 2) +
                       pow((vertex_screen[(*vertex)][1] - y), 2)) < error) {
             error_x = fabs(vertex_screen[(*vertex)][0] - x);
             error_y = fabs(vertex_screen[(*vertex)][1] - y);
             error = pow((vertex_screen[(*vertex)][0] - x), 2) +
                     pow((vertex_screen[(*vertex)][1] - y), 2);
-            selected_vertex = *vertex;
+            closest_vertex = *vertex;
+          }
           }
         }
         if (found) break;
         if (prim == primitives.end() - 1) {
           // last prim. Just use the closest vertex
+          if (selected_vertex == (unsigned) -1) {
+            printf("cannot find any primitive for %u - use nearest vertex\n",pixel);
+            selected_vertex = closest_vertex;
+          }
+          else if (all.size() >= 1) {
+            float error = FBO->width * FBO->height;
+            for (unsigned i = 0; i < all.size(); i ++) {
+              std::vector<unsigned> this_prim = all[i];
+              for (unsigned j = 0; j < this_prim.size(); j++) {
+                if (pow((vertex_screen[this_prim[j]][0] - x), 2) +
+                    pow((vertex_screen[this_prim[j]][1] - y), 2) < error) {
+                error = pow((vertex_screen[this_prim[j]][0] - x), 2) +
+                    pow((vertex_screen[this_prim[j]][1] - y), 2);
+                selected_vertex = this_prim[j];
+              }
+              }
+            }
+          }
           std::vector<float> pos;
           pos.push_back(x);
           pos.push_back(y);
@@ -1568,7 +1630,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
           printf(
               "cannot find exact match for pixel %u, using closest with error "
               "[x,y] [%f, %f]\n",
-              pixel, error_x, error_y);
+              pixel, vertex_screen[selected_vertex][0]-x, vertex_screen[selected_vertex][1]-y);
           break;
         }
       }
@@ -1613,14 +1675,14 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     }
   }
   context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[2], VertexMeta->vertex_out[2],
-      VertexMeta->vertex_out_size[2]);
+      VertexMeta->vertex_out_devptr[0], VertexMeta->vertex_out[0],
+      VertexMeta->vertex_out_size[0]);
   context->get_device()->get_gpgpu()->memcpy_to_gpu(
       VertexMeta->vertex_out_devptr[1], VertexMeta->vertex_out[1],
       VertexMeta->vertex_out_size[1]);
   context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[0], VertexMeta->vertex_out[0],
-      VertexMeta->vertex_out_size[0]);
+      VertexMeta->vertex_out_devptr[2], VertexMeta->vertex_out[2],
+      VertexMeta->vertex_out_size[2]);
   
 
   // pixel shaders
