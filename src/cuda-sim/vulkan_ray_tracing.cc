@@ -1231,24 +1231,48 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 // int CmdTraceRaysKHRID = 0;
 
-float sign(std::vector<float> p1, std::vector<float> p2,
-           std::vector<float> p3) {
-  return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1]);
-}
+void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
 
-bool PointInTriangle(std::vector<float> pt, std::vector<float> v1,
-                     std::vector<float> v2, std::vector<float> v3) {
-  float d1, d2, d3;
-  bool has_neg, has_pos;
+  shader_stage_info shader = VulkanRayTracing::shaders[shader_id];
+  function_info *entry = context->get_kernel(shader.function_name);
 
-  d1 = sign(pt, v1, v2);
-  d2 = sign(pt, v2, v3);
-  d3 = sign(pt, v3, v1);
+  if (entry->is_pdom_set()) {
+    printf("GPGPU-Sim PTX: PDOM analysis already done for %s \n",
+           entry->get_name().c_str());
+  } else {
+    printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n",
+           entry->get_name().c_str());
+    /*
+     * Some of the instructions like printf() gives the gpgpusim the wrong
+     * impression that it is a function call. As printf() doesnt have a body
+     * like functions do, doing pdom analysis for printf() causes a crash.
+     */
+    if (entry->get_function_size() > 0) entry->do_pdom();
+    entry->set_pdom();
+  }
 
-  has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-  has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+  dim3 blockDim = dim3(64, 1, 1);
+  // dim3 gridDim = dim3(1, 1, 1);
+  dim3 gridDim = dim3((thread_count + 63) / 64, 1, 1);
 
-  return !(has_neg && has_pos);
+  gpgpu_ptx_sim_arg_list_t args;
+  kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+      shader.function_name, args, gridDim, blockDim, context);
+
+  struct CUstream_st *stream = 0;
+
+  stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
+  ctx->the_gpgpusim->g_stream_manager->push(op);
+
+  fflush(stdout);
+
+  while (!op.is_done() && !op.get_kernel()->done()) {
+    printf("waiting for op to finish\n");
+    sleep(1);
+    continue;
+  }
 }
 
 const bool writeImageBinary = true;
@@ -1257,7 +1281,8 @@ unsigned draw = 0;
 #define start_from_checkpoint true
 #define DEBUG_RAST false
 #define DRAW_START 0
-#define DRAW_END 23
+#define DRAW_END 0
+
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline, 
                                  VkViewport *viewports) {
@@ -1270,6 +1295,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
+  FILE *fp;
   // create fbo
   printf("Starting Drawcall #%u\n", draw);
   if (!FBO->fbo) {
@@ -1312,21 +1338,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       }
     }
   }
+  // Dump Descriptor Sets
+  if (!use_external_launcher) {
+    dump_descriptor_sets(VulkanRayTracing::descriptorSet);
+  }
   assert(vertex_count != -1);
   // manual override.
   VertexMeta->vertex_out_stride[0] = VertexMeta->vertex_out_stride[0] / 3 * 4;
   VertexMeta->vertex_out_count[0] = VertexMeta->vertex_out_count[0] / 3 * 4;
   VertexMeta->vertex_out_size[0] = VertexMeta->vertex_out_size[0] / 3 * 4;
-
-  uint16_t *index_buffer =
-      anv_address_map(VertexMeta->index_buffer->address);
-  for (unsigned i = 0; i < VertexMeta->index_buffer->size / 2; i = i + 3) {
-    std::vector<unsigned> prim;
-    prim.push_back(index_buffer[i]);
-    prim.push_back(index_buffer[i + 1]);
-    prim.push_back(index_buffer[i + 2]);
-    VertexMeta->index_to_draw.push_back(prim);
-  }
 
   VertexMeta->vertex_out[0] = new float[VertexMeta->vertex_out_count[0]];
   // device pointer
@@ -1345,59 +1365,18 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   VertexMeta->vertex_out_devptr[2] =
       context->get_device()->get_gpgpu()->gpu_malloc(
           VertexMeta->vertex_out_size[2]);
-  // Dump Descriptor Sets
-  if (!use_external_launcher) {
-    dump_descriptor_sets(VulkanRayTracing::descriptorSet);
-  }
-
-  ctx->func_sim->g_total_shaders = shaders.size();
-
-  shader_stage_info shader = shaders[0];
-  function_info *entry = context->get_kernel(shader.function_name);
-
-  if (entry->is_pdom_set()) {
-    printf("GPGPU-Sim PTX: PDOM analysis already done for %s \n",
-           entry->get_name().c_str());
-  } else {
-    printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n",
-           entry->get_name().c_str());
-    /*
-     * Some of the instructions like printf() gives the gpgpusim the wrong
-     * impression that it is a function call. As printf() doesnt have a body
-     * like functions do, doing pdom analysis for printf() causes a crash.
-     */
-    if (entry->get_function_size() > 0) entry->do_pdom();
-    entry->set_pdom();
-  }
-
-  dim3 blockDim = dim3(64, 1, 1);
-  // dim3 gridDim = dim3(1, 1, 1);
-  dim3 gridDim = dim3((vertex_count + 63) / 64, 1, 1);
-
-  gpgpu_ptx_sim_arg_list_t args;
-  kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
-      shader.function_name, args, gridDim, blockDim, context);
-
-  struct CUstream_st *stream = 0;
 
   if (!start_from_checkpoint) {
-    stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
-    ctx->the_gpgpusim->g_stream_manager->push(op);
-
-    fflush(stdout);
-
-    while (!op.is_done() && !op.get_kernel()->done()) {
-      printf("waiting for op to finish\n");
-      sleep(1);
-      continue;
-    }
+    // run vertex shader
+    run_shader(0,vertex_count);
   }
 
-  // vertex shader done
+  std::string mesa_root = getenv("MESA_ROOT");
+  std::string filePath = "../fb/depth_buffer/";
 
-  std::string vb0 = "vb0_" + std::to_string(draw) + ".bin";
-  std::string vb1 = "vb1_" + std::to_string(draw) + ".bin";
-  std::string vb2 = "vb2_" + std::to_string(draw) + ".bin";
+  std::string vb0 = mesa_root + "../vb/" + "vb0_" + std::to_string(draw) + ".bin";
+  std::string vb1 = mesa_root + "../vb/" + "vb1_" + std::to_string(draw) + ".bin";
+  std::string vb2 = mesa_root + "../vb/" + "vb2_" + std::to_string(draw) + ".bin";
   if (!start_from_checkpoint) {
     // copy vertex back and do post processing
     context->get_device()->get_gpgpu()->memcpy_from_gpu(
@@ -1461,11 +1440,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     vertex_ndc.push_back(ndc);
 
     // X = (X + 1) * Viewport.Width * 0.5 + Viewport.TopLeftX
-    // Y = (1 - Y) * Viewport.Height * 0.5 + Viewport.TopLeftY
+    // Y = (1 - Y) * Viewport.Height * 0.5 + Viewport.TopLeftY (actually no)
     // Z = Viewport.MinDepth + Z * (Viewport.MaxDepth - Viewport.MinDepth)
     float screen_x = (ndc_x + 1) * (FBO->width / 2) + FBO->x;
-    float screen_y = (1 + ndc_y) * (FBO->height / 2) + FBO->y;
-    // float screen_z = 0.5f * ndc_z + 0.5f;
+    float screen_y = (ndc_y + 1) * (FBO->height / 2) + FBO->y;
     float screen_z = 0.0f + ndc_z * (1.0f - 0.0f);
     view.push_back(screen_x);
     view.push_back(screen_y);
@@ -1484,58 +1462,53 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
 
   // Assemble into triangles using index buffer
-  // [primitives->[vertex->[xyz]]]
-  // save vertex id, instead of vertex data
+  uint16_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
   std::vector<std::vector<unsigned>> primitives;
-  for (std::vector<std::vector<unsigned>>::iterator index =
-           VertexMeta->index_to_draw.begin();
-       index < VertexMeta->index_to_draw.end(); index++) {
+  for (unsigned i = 0; i < VertexMeta->index_buffer->size / sizeof(uint16_t);
+       i += 3) {
     unsigned clipped = 0;
-    for (unsigned i = 0; i < (*index).size(); i++) {
-      if (fabs(vertex_raw[(*index)[i]][0]) > fabs(vertex_raw[(*index)[i]][3])) {
+    std::vector<unsigned> prim;
+    for (unsigned j = 0; j < 3; j++) {
+      unsigned index = index_buffer[i + j];
+      prim.push_back(index);
+      // (-w <= x,y,z <= w) equal to (fabs(x,y,z) > fbas(w))
+      if (fabs(vertex_raw[index][0]) > fabs(vertex_raw[index][3])) {
         clipped++;
         continue;
       }
-      if (fabs(vertex_raw[(*index)[i]][1]) > fabs(vertex_raw[(*index)[i]][3])) {
+      if (fabs(vertex_raw[index][1]) > fabs(vertex_raw[index][3])) {
         clipped++;
         continue;
       }
-      if (fabs(vertex_raw[(*index)[i]][2]) > fabs(vertex_raw[(*index)[i]][3])) {
+      if (fabs(vertex_raw[index][2]) > fabs(vertex_raw[index][3])) {
         clipped++;
         continue;
       }
     }
-    if (clipped < (*index).size()) {
-      primitives.push_back(*index);
+    if (clipped < 3) {
+      primitives.push_back(prim);
     }
   }
+
   printf("total primitives after clipping: %u\n", primitives.size());
-  // convert from NDC to view space
 
+  // float *depth_before, *depth_after;
+  // depth_before = new float[FBO->width * FBO->height];
+  // depth_after = new float[FBO->width * FBO->height];
+  // unsigned size = FBO->width * FBO->height * sizeof(float);
 
-  std::string mesa_root = getenv("MESA_ROOT");
-  std::string filePath = "../fb/depth_buffer/";
-  // just compare binary data. 
-  float *depth_before, *depth_after;
-  depth_before = new float[FBO->width * FBO->height];
-  depth_after = new float[FBO->width * FBO->height];
-  unsigned size = FBO->width * FBO->height * sizeof(float);
+  // VulkanRayTracing::read_binary_file(
+  //     mesa_root + filePath + "depth_" + std::to_string(draw) + ".bin",
+  //     depth_before, size);
 
-  // read in depth buffer before drawcall
-  VulkanRayTracing::read_binary_file(
-      mesa_root + filePath + "depth_" + std::to_string(draw) + ".bin",
-      depth_before, size);
-
-  // read in depth buffer after drawcall
-  VulkanRayTracing::read_binary_file(
-      mesa_root + filePath + "depth_" + std::to_string(draw + 1) + ".bin",
-      depth_after, size);
+  // VulkanRayTracing::read_binary_file(
+  //     mesa_root + filePath + "depth_" + std::to_string(draw + 1) + ".bin",
+  //     depth_after, size);
 
   std::vector<unsigned> drawed_pixels;
   std::vector<std::vector<float>> in_pos;
   std::vector<std::vector<float>> in_uv;
   std::vector<std::vector<float>> in_normal;
-  std::bitset <1280*720> mask;
   std::unordered_map<unsigned, unsigned> pixel_map;
   for (std::vector<std::vector<unsigned>>::iterator prim = primitives.begin();
        prim < primitives.end(); prim++) {
@@ -1563,9 +1536,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       for (int y = (int)min_y; y <= (int)max_y; y++) {
         unsigned pixel = y * FBO->width + x;
         float det = x1 * (y2 - y3) - y1 * (x2 - x3) + (x2 * y3 - y2 * x3);
-        // if (det < 1e-3) {
-        //   continue;
-        // }
         // https://gamedev.stackexchange.com/questions/23743/whats-the-most-efficient-way-to-find-barycentric-coordinates
         float d00 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
         float d01 = (x2 - x1) * (x3 - x1) + (y2 - y1) * (y3 - y1);
@@ -1589,9 +1559,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
         float depth = u * vertex_screen[(*prim)[0]][2] +
                       v * vertex_screen[(*prim)[1]][2] +
                       w * vertex_screen[(*prim)[2]][2];
-        // float depth = 1.0f / (u/vertex_screen[(*prim)[0]][2] +
-        //               v/vertex_screen[(*prim)[1]][2] +
-        //               w/vertex_screen[(*prim)[2]][2]);
         // printf("depth is %f\n",depth);
         if (depth < FBO->depthout[pixel]) {
           continue;
@@ -1602,7 +1569,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
         //   continue;
         // }
         count++;
-        mask.set(pixel);
         if (DEBUG_RAST) {
           FBO->fbo[(pixel) * 4] = r;
           FBO->fbo[(pixel) * 4 + 1] = g;
@@ -1662,13 +1628,11 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       }
     }
   }
-  delete(depth_after);
-  delete(depth_before);
 
-  // assert(drawed_pixels.size() == in_pos.size());
+  // delete(depth_after);
+  // delete(depth_before);
+
   printf("total frags collected - %u\n",in_pos.size());
-  // save draw mask for debugging
-  FILE *fp;
 
   if (!DEBUG_RAST) {
   // copy vertex data to gpu
@@ -1724,42 +1688,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
   // pixel shaders
   unsigned frag_count = in_pos.size();
-  shader = shaders[1];
-  entry = context->get_kernel(shader.function_name);
-
-  if (entry->is_pdom_set()) {
-    printf("GPGPU-Sim PTX: PDOM analysis already done for %s \n",
-           entry->get_name().c_str());
-  } else {
-    printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n",
-           entry->get_name().c_str());
-    /*
-     * Some of the instructions like printf() gives the gpgpusim the wrong
-     * impression that it is a function call. As printf() doesnt have a body
-     * like functions do, doing pdom analysis for printf() causes a crash.
-     */
-    if (entry->get_function_size() > 0) entry->do_pdom();
-    entry->set_pdom();
-  }
-
-  blockDim = dim3(64, 1, 1);
-  gridDim = dim3((frag_count + 63) / 64, 1, 1);
-
-  grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
-      shader.function_name, args, gridDim, blockDim, context);
-
-  stream = 0;
-
-  stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
-  ctx->the_gpgpusim->g_stream_manager->push(op);
-
-  fflush(stdout);
-
-  while (!op.is_done() && !op.get_kernel()->done()) {
-    printf("waiting for op to finish\n");
-    sleep(1);
-    continue;
-  }
+  run_shader(1,frag_count);
 
   // copy back framebuffer and dump
   context->get_device()->get_gpgpu()->memcpy_from_gpu(FBO->fbo, FBO->fbo_dev,
@@ -1785,15 +1714,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   system(fbo_cmd.c_str());
   system(("rm " + fbo_file + ".bin").c_str());
 
-  // for (unsigned i = 0; i < FBO->fbo_count/4; i ++) {
-  //   if (FBO->fbo[4*i] != 0 || FBO->fbo[4*i+1] != 0 || FBO->fbo[4*i+2] != 0 || FBO->fbo[4*i+3] != 0) {
-  //     FBO->depthout[i] = (1.0);
-  //   } else {
-  //     FBO->depthout[i] = (0.0);
-  //   }
-  // }
-
   for (unsigned i = 0; i < FBO->thread_info_pixel.size(); i++) {
+    // check if every pixel selected by rasterizer is shaded
     if (!(FBO->fbo[FBO->thread_info_pixel[i] * 4] != 0 ||
           FBO->fbo[FBO->thread_info_pixel[i] * 4 + 1] != 0 ||
           FBO->fbo[FBO->thread_info_pixel[i] * 4 + 2] != 0 ||
@@ -1803,6 +1725,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
   FBO->thread_info_pixel.clear();
   FBO->thread_info_vertex.clear();
+
+  // save FBO and depth buffer to jpg
   std::string depth_file =
       mesa_root + "../fb/" + "depth_out_" + std::to_string(draw);
   fp = fopen((depth_file + ".bin").c_str(), "wb+");
@@ -1839,7 +1763,7 @@ void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned si
 }
 
 void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr) {
-  VertexMeta->index_buffer = ptr;;
+  VertexMeta->index_buffer = ptr;
 }
 
 uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
@@ -1957,7 +1881,6 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
             break;
         }
     }
-    ctx->func_sim->g_total_shaders = shaders.size();
 
     shader_stage_info raygen_shader = shaders[index];
     function_info *entry = context->get_kernel(raygen_shader.function_name);

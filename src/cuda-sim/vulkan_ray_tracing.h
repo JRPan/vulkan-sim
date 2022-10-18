@@ -287,13 +287,11 @@ public:
     static void setDescriptorSet(struct anv_descriptor_set *set);
     static void invoke_gpgpusim();
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
+    static void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count);
     static void VulkanRayTracing::vkCmdDraw(
         struct anv_vertex_binding *vbuffer,
         struct anv_graphics_pipeline *pipeline,
         struct VkViewport *viewports);
-    static std::vector<std::vector<unsigned>> VulkanRayTracing::bresenham(
-        unsigned x1, unsigned x2, unsigned x3, unsigned y1, unsigned y2,
-        unsigned y3);
     static void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned size);
     static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr);
     static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t offset);
