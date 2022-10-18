@@ -92,9 +92,9 @@ typedef struct Vulkan_RT_thread_data {
           entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
       } else if (name == "\%field0" || name == "\%o_uv3" ||
                  name == "\%o_normal4" || name == "\%in_normal" ||
-                 name == "%in_pos" || name == "\%in_uv") {
+                 name == "\%in_pos" || name == "\%in_uv") {
         unsigned buffer_index = -1;
-        if (name == "\%field0" || name == "%in_pos") {
+        if (name == "\%field0" || name == "\%in_pos") {
           buffer_index = 0;
         } else if (name == "\%o_uv3" || name == "\%in_uv") {
           buffer_index = 1;

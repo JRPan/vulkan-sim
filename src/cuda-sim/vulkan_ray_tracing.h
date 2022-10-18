@@ -222,6 +222,8 @@ typedef struct FBO {
   unsigned height = -1;
   unsigned x = -1;
   unsigned y = -1;
+  std::vector<unsigned> thread_info_pixel;
+  std::vector<unsigned> thread_info_vertex;
 } FBO;
 
 struct anv_descriptor_set;
