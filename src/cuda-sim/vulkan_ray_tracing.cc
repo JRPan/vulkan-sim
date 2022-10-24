@@ -1280,8 +1280,8 @@ const bool writeImageBinary = true;
 unsigned draw = 0;
 #define start_from_checkpoint true
 #define DEBUG_RAST false
-#define DRAW_START 0
-#define DRAW_END 0
+unsigned DRAW_START = 0;
+unsigned DRAW_END = 0;
 
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline, 
@@ -1505,11 +1505,14 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   //     mesa_root + filePath + "depth_" + std::to_string(draw + 1) + ".bin",
   //     depth_after, size);
 
+  unsigned tile_size = 16;
   std::vector<unsigned> drawed_pixels;
   std::vector<std::vector<float>> in_pos;
   std::vector<std::vector<float>> in_uv;
   std::vector<std::vector<float>> in_normal;
   std::unordered_map<unsigned, unsigned> pixel_map;
+  std::vector<std::vector<unsigned>> tile_map;
+  tile_map.resize(FBO->width * FBO->height / tile_size / tile_size);
   for (std::vector<std::vector<unsigned>>::iterator prim = primitives.begin();
        prim < primitives.end(); prim++) {
     float x1 = vertex_screen[(*prim)[0]][0];
@@ -1532,6 +1535,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     float g = rand() % 255 / 255.f;
     float b = rand() % 255 / 255.f;
     unsigned count = 0;
+
+    assert(FBO->width % tile_size == 0);
+    assert(FBO->height % tile_size == 0);
+    unsigned tile_id = (min_y * FBO->width + min_x) / tile_size / tile_size;
     for (int x = (int)min_x; x <= (int)max_x; x++) {
       for (int y = (int)min_y; y <= (int)max_y; y++) {
         unsigned pixel = y * FBO->width + x;
@@ -1623,6 +1630,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
         }
         FBO->depthout[pixel] = depth;
         pixel_map[pixel] = in_pos.size() - 1;
+        tile_map[tile_id].push_back(in_pos.size() - 1);
         FBO->thread_info_vertex.push_back((*prim)[0]);
         FBO->thread_info_pixel.push_back(pixel);
       }
@@ -1654,17 +1662,38 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   VertexMeta->vertex_out[1] = new float[VertexMeta->vertex_out_count[1]];
   VertexMeta->vertex_out[2] = new float[VertexMeta->vertex_out_count[2]];
 
-  for (unsigned i = 0; i < in_pos.size(); i++) {
-    for (unsigned j = 0; j < in_pos[i].size(); j++) {
-      VertexMeta->vertex_out[0][i * in_pos[i].size() + j] = in_pos[i][j];
-    }
-    for (unsigned j = 0; j < in_uv[i].size(); j++) {
-      VertexMeta->vertex_out[1][i * in_uv[i].size() + j] = in_uv[i][j];
-    }
-    for (unsigned j = 0; j < in_normal[i].size(); j++) {
-      VertexMeta->vertex_out[2][i * in_normal[i].size() + j] = in_normal[i][j];
+  std::vector<unsigned> pixel_index = FBO->thread_info_pixel;
+  FBO->thread_info_pixel.clear();
+  unsigned index = 0;
+  for (unsigned tile = 0; tile < tile_map.size(); tile++) {
+    for (unsigned frag = 0; frag < tile_map[tile].size(); frag++) {
+      unsigned i = tile_map[tile][frag];
+      for (unsigned j = 0; j < in_pos[i].size(); j++) {
+        VertexMeta->vertex_out[0][index * in_pos[i].size() + j] = in_pos[i][j];
+      }
+      for (unsigned j = 0; j < in_uv[i].size(); j++) {
+        VertexMeta->vertex_out[1][index * in_uv[i].size() + j] = in_uv[i][j];
+      }
+      for (unsigned j = 0; j < in_normal[i].size(); j++) {
+        VertexMeta->vertex_out[2][index * in_normal[i].size() + j] =
+            in_normal[i][j];
+      }
+      FBO->thread_info_pixel.push_back(pixel_index[i]);
+      index++;
     }
   }
+  assert(pixel_index.size() == FBO->thread_info_pixel.size());
+  // for (unsigned i = 0; i < in_pos.size(); i++) {
+  //   for (unsigned j = 0; j < in_pos[i].size(); j++) {
+  //     VertexMeta->vertex_out[0][i * in_pos[i].size() + j] = in_pos[i][j];
+  //   }
+  //   for (unsigned j = 0; j < in_uv[i].size(); j++) {
+  //     VertexMeta->vertex_out[1][i * in_uv[i].size() + j] = in_uv[i][j];
+  //   }
+  //   for (unsigned j = 0; j < in_normal[i].size(); j++) {
+  //     VertexMeta->vertex_out[2][i * in_normal[i].size() + j] = in_normal[i][j];
+  //   }
+  // }
 
   VertexMeta->vertex_out_devptr[0] =
       context->get_device()->get_gpgpu()->gpu_malloc(
