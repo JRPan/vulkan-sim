@@ -123,6 +123,8 @@ for l in f.readlines():
         #print("// " + l)
         segs = l.split("//")[0].replace(",", "").replace(";", "").split()
         #print(segs)
+        if unknown_op_name[idx] == 'txs' :
+            continue
         if(segs[0] == unknown_op_name[idx]):
             #print("unknown op matches")
             segs.remove(segs[0])
@@ -141,6 +143,8 @@ for l in f.readlines():
 
                 # Convert unknown op to convert chain
                 # Printing Instruction
+                if (operands[i+1] == '0F000000ff'):
+                    continue
                 if((symbol_table[operands[i]][2:] != symbol_table[operands[i+1]][2:])): # When bit sizes dont match
                     #print(symbol_table[operands[i]][2:])
                     #print(symbol_table[operands[i+1]][2:])
