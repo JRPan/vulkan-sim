@@ -3076,7 +3076,6 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   switch (pI->get_opcode()) {
     // ignored
     case LD_RAY_LAUNCH_ID_OP...CALL_ANY_HIT_SHADER_OP:
-    case RET_OP:
       return;
     default:
       break;
@@ -3110,6 +3109,7 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       }
       break;
     }
+    case RET_OP:
     case EXIT_OP: {
       sass << "EXIT";
       break;
