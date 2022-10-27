@@ -3441,6 +3441,9 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
+  // if (pI->source_line() == 217) {
+  //     printf("tid %u reading %f\n", thread->get_uid() - 1, data.f32);
+  // }
 }
 
 void ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -5862,6 +5865,9 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
+    // if (pI->source_line() == 1018) {
+    //   printf("tid %u writing %f\n", thread->get_uid() - 1,data.f32);
+    // }
     mem->write(addr, size / 8, &data.s64, thread, pI);
     // assert(size == 32);
     // memcpy(address, &data.s64, size / 8);
@@ -7139,7 +7145,7 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     // assuming every vertex data is 32-bit
     unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
     // assert(thread_id == (thread->get_uid()-1));
-    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size, thread_id * size/4);
+    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size, thread_id);
   }
 
   data.u64 = address;

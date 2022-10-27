@@ -111,6 +111,8 @@ struct vertex_metadata* VulkanRayTracing::VertexMeta = new struct vertex_metadat
 struct FBO* VulkanRayTracing::FBO = new struct FBO;
 
 bool VulkanRayTracing::_init_ = false;
+bool VulkanRayTracing::is_FS = false;
+unsigned VulkanRayTracing::thread_count = 0;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
 
 float get_norm(float4 v)
@@ -1211,6 +1213,7 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
     context->register_function(fat_cubin_handle, shader.function_name, deviceFunction.c_str());
 
     VulkanRayTracing::shaders.push_back(shader);
+    system(("mv " + fullpath + " " + fullpath + "_translated").c_str());
 
     return shader.ID;
 }
@@ -1232,6 +1235,8 @@ void VulkanRayTracing::invoke_gpgpusim()
 // int CmdTraceRaysKHRID = 0;
 
 void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
+  // TODO: choose correct shaders
+  shader_id = shader_id + 4;
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
 
@@ -1278,10 +1283,17 @@ void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
 const bool writeImageBinary = true;
 // checkpointing to we don't have to run vertex shader every time
 unsigned draw = 0;
-#define start_from_checkpoint true
+#define SKIP_VS false
 #define DEBUG_RAST false
 unsigned DRAW_START = 0;
 unsigned DRAW_END = 0;
+
+unsigned attrib_size[] = {3,3,2};
+unsigned attrib_stride[] = {0,12,24,32};
+unsigned out_attrib_count = 6;
+unsigned out_attrib_size[] = {12,12,8,12,12,16};
+unsigned out_pos = 5;
+
 
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                  struct anv_graphics_pipeline *pipeline, 
@@ -1319,6 +1331,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   // could be different for different type of FBO
   // dump vertex buffer
   unsigned vertex_count = -1;
+  VulkanRayTracing::is_FS = false;
   for (unsigned i = 0; i < MAX_VBS; i++) {
     if (vbuffer[i].buffer) {
       // printf("vb[%u] is used\n", i);
@@ -1326,7 +1339,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       // stride should be multilpe of 4 bytes -> vectors
       assert(pipeline->vb[i].stride % 4 == 0);
       VertexMeta->vertex_stride[i] = pipeline->vb[i].stride;
-      VertexMeta->vertex_out_stride[i] = pipeline->vb[i].stride;
       // vertex count should be multiple of vector size
       assert(vbuffer[i].buffer->size % (pipeline->vb[i].stride / 4) == 0);
       if (vertex_count == (unsigned)-1) {
@@ -1343,76 +1355,55 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     dump_descriptor_sets(VulkanRayTracing::descriptorSet);
   }
   assert(vertex_count != -1);
-  // manual override.
-  VertexMeta->vertex_out_stride[0] = VertexMeta->vertex_out_stride[0] / 3 * 4;
-  VertexMeta->vertex_out_count[0] = VertexMeta->vertex_out_count[0] / 3 * 4;
-  VertexMeta->vertex_out_size[0] = VertexMeta->vertex_out_size[0] / 3 * 4;
 
-  VertexMeta->vertex_out[0] = new float[VertexMeta->vertex_out_count[0]];
-  // device pointer
-  VertexMeta->vertex_out_devptr[0] =
-      context->get_device()->get_gpgpu()->gpu_malloc(
-          VertexMeta->vertex_out_size[0]);
+  // instancing
+  // layout(location = 1) out vec3 outColor;
+  // layout(location = 2) out vec2 outUV;
+  // layout(location = 0) out vec3 outNormal;
+  // layout(location = 4) out vec3 outLightVec;
+  // layout(location = 3) out vec3 outViewVec;
 
-  VertexMeta->vertex_out[1] = new float[VertexMeta->vertex_out_count[1]];
-  // device pointer
-  VertexMeta->vertex_out_devptr[1] =
-      context->get_device()->get_gpgpu()->gpu_malloc(
-          VertexMeta->vertex_out_size[1]);
+  for (unsigned i = 0; i < out_attrib_count; i ++) {
+    VertexMeta->vertex_out_stride[i] = out_attrib_size[i];
+    VertexMeta->vertex_out_count[i] = out_attrib_size[i] / 4 * vertex_count;
+    VertexMeta->vertex_out_size[i] = out_attrib_size[i] * vertex_count;
+    VertexMeta->vertex_out[i] = new float[VertexMeta->vertex_out_count[i]];
+    VertexMeta->vertex_out_devptr[i] =
+        context->get_device()->get_gpgpu()->gpu_malloc(
+            VertexMeta->vertex_out_size[i]);
+  }
 
-  VertexMeta->vertex_out[2] = new float [VertexMeta->vertex_out_count[2]];
-  // device pointer
-  VertexMeta->vertex_out_devptr[2] =
-      context->get_device()->get_gpgpu()->gpu_malloc(
-          VertexMeta->vertex_out_size[2]);
-
-  if (!start_from_checkpoint) {
+  VulkanRayTracing::thread_count = vertex_count;
+  if (!SKIP_VS) {
     // run vertex shader
-    run_shader(0,vertex_count);
+    run_shader(0,VulkanRayTracing::thread_count);
   }
 
   std::string mesa_root = getenv("MESA_ROOT");
   std::string filePath = "../fb/depth_buffer/";
 
-  std::string vb0 = mesa_root + "../vb/" + "vb0_" + std::to_string(draw) + ".bin";
-  std::string vb1 = mesa_root + "../vb/" + "vb1_" + std::to_string(draw) + ".bin";
-  std::string vb2 = mesa_root + "../vb/" + "vb2_" + std::to_string(draw) + ".bin";
-  if (!start_from_checkpoint) {
-    // copy vertex back and do post processing
-    context->get_device()->get_gpgpu()->memcpy_from_gpu(
-        VertexMeta->vertex_out[0], VertexMeta->vertex_out_devptr[0],
-        VertexMeta->vertex_out_size[0]);
-    context->get_device()->get_gpgpu()->memcpy_from_gpu(
-        VertexMeta->vertex_out[1], VertexMeta->vertex_out_devptr[1],
-        VertexMeta->vertex_out_size[1]);
-    context->get_device()->get_gpgpu()->memcpy_from_gpu(
-        VertexMeta->vertex_out[2], VertexMeta->vertex_out_devptr[2],
-        VertexMeta->vertex_out_size[2]);
-    FILE *fp;
-    fp = fopen(vb0.c_str(), "wb+");
-    fwrite(VertexMeta->vertex_out[0], 1, VertexMeta->vertex_out_size[0], fp);
-    fclose(fp);
+  for (unsigned i = 0; i < out_attrib_count; i++) {
+    std::string vb = mesa_root + "../vb/" + "vb" + std::to_string(i) + "_" +
+                     std::to_string(draw) + ".bin";
 
-    fp = fopen(vb1.c_str(), "wb+");
-    fwrite(VertexMeta->vertex_out[1], 1, VertexMeta->vertex_out_size[1], fp);
-    fclose(fp);
-
-    fp = fopen(vb2.c_str(), "wb+");
-    fwrite(VertexMeta->vertex_out[2], 1, VertexMeta->vertex_out_size[2], fp);
-    fclose(fp);
-  } else {
-    VulkanRayTracing::read_binary_file(vb0.c_str(),VertexMeta->vertex_out[0],VertexMeta->vertex_out_size[0]);
-    VulkanRayTracing::read_binary_file(vb1.c_str(),VertexMeta->vertex_out[1],VertexMeta->vertex_out_size[1]);
-    VulkanRayTracing::read_binary_file(vb2.c_str(),VertexMeta->vertex_out[2],VertexMeta->vertex_out_size[2]);
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[0],VertexMeta->vertex_out[0],
-      VertexMeta->vertex_out_size[0]);
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(
-        VertexMeta->vertex_out_devptr[1], VertexMeta->vertex_out[1], 
-        VertexMeta->vertex_out_size[1]);
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(
-        VertexMeta->vertex_out_devptr[2], VertexMeta->vertex_out[2], 
-        VertexMeta->vertex_out_size[2]);
+    if (!SKIP_VS) {
+      context->get_device()->get_gpgpu()->memcpy_from_gpu(
+          VertexMeta->vertex_out[i], VertexMeta->vertex_out_devptr[i],
+          VertexMeta->vertex_out_size[i]);
+      FILE *fp;
+      fp = fopen(vb.c_str(), "wb+");
+      fwrite(VertexMeta->vertex_out[i], 1, VertexMeta->vertex_out_size[i], fp);
+      fclose(fp);
+    } else {
+      VulkanRayTracing::read_binary_file(vb.c_str(), VertexMeta->vertex_out[i],
+                                         VertexMeta->vertex_out_size[i]);
+      context->get_device()->get_gpgpu()->memcpy_to_gpu(
+          VertexMeta->vertex_out_devptr[i], VertexMeta->vertex_out[i],
+          VertexMeta->vertex_out_size[i]);
+    }
+  }
+  for (unsigned i = 0; i < VertexMeta->vertex_out_count[1]; i++) {
+    VertexMeta->vertex_out[1][i] = 1.0f;
   }
 
   // vertex-post processing
@@ -1420,22 +1411,22 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   std::vector<std::vector<float>> vertex_ndc;
   std::vector<std::vector<float>> vertex_screen;
   std::vector<std::vector<float>> vertex_raw;
-  for (unsigned i = 0; i < VertexMeta->vertex_out_count[0]; i = i + 4) {
+  for (unsigned i = 0; i < VertexMeta->vertex_out_count[out_pos]; i += 4) {
     // transform to NDC space
     std::vector<float> ndc;
     std::vector<float> view;
     std::vector<float> raw;
-    float ndc_x =
-        (VertexMeta->vertex_out[0][i] / VertexMeta->vertex_out[0][i + 3]);
+    float ndc_x = (VertexMeta->vertex_out[out_pos][i] /
+                   VertexMeta->vertex_out[out_pos][i + 3]);
     ndc.push_back(ndc_x);
-    float ndc_y =
-        (VertexMeta->vertex_out[0][i + 1] / VertexMeta->vertex_out[0][i + 3]);
+    float ndc_y = (VertexMeta->vertex_out[out_pos][i + 1] /
+                   VertexMeta->vertex_out[out_pos][i + 3]);
     ndc.push_back(ndc_y);
-    float ndc_z =
-        (VertexMeta->vertex_out[0][i + 2] / VertexMeta->vertex_out[0][i + 3]);
+    float ndc_z = (VertexMeta->vertex_out[out_pos][i + 2] /
+                   VertexMeta->vertex_out[out_pos][i + 3]);
     ndc.push_back(ndc_z);
-    float ndc_w =
-        (VertexMeta->vertex_out[0][i + 3] / VertexMeta->vertex_out[0][i + 3]);
+    float ndc_w = (VertexMeta->vertex_out[out_pos][i + 3] /
+                   VertexMeta->vertex_out[out_pos][i + 3]);
     ndc.push_back(ndc_w);
     vertex_ndc.push_back(ndc);
 
@@ -1451,10 +1442,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     view.push_back(ndc_w);
     vertex_screen.push_back(view);
 
-    raw.push_back(VertexMeta->vertex_out[0][i]);
-    raw.push_back(VertexMeta->vertex_out[0][i+1]);
-    raw.push_back(VertexMeta->vertex_out[0][i+2]);
-    raw.push_back(VertexMeta->vertex_out[0][i+3]);
+    raw.push_back(VertexMeta->vertex_out[out_pos][i]);
+    raw.push_back(VertexMeta->vertex_out[out_pos][i+1]);
+    raw.push_back(VertexMeta->vertex_out[out_pos][i+2]);
+    raw.push_back(VertexMeta->vertex_out[out_pos][i+3]);
     vertex_raw.push_back(raw);
   }
   assert(vertex_screen.size() == vertex_count);
@@ -1462,9 +1453,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
 
   // Assemble into triangles using index buffer
-  uint16_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+  uint32_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
   std::vector<std::vector<unsigned>> primitives;
-  for (unsigned i = 0; i < VertexMeta->index_buffer->size / sizeof(uint16_t);
+  for (unsigned i = 0; i < VertexMeta->index_buffer->size / sizeof(uint32_t);
        i += 3) {
     unsigned clipped = 0;
     std::vector<unsigned> prim;
@@ -1492,27 +1483,16 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
   printf("total primitives after clipping: %u\n", primitives.size());
 
-  // float *depth_before, *depth_after;
-  // depth_before = new float[FBO->width * FBO->height];
-  // depth_after = new float[FBO->width * FBO->height];
-  // unsigned size = FBO->width * FBO->height * sizeof(float);
-
-  // VulkanRayTracing::read_binary_file(
-  //     mesa_root + filePath + "depth_" + std::to_string(draw) + ".bin",
-  //     depth_before, size);
-
-  // VulkanRayTracing::read_binary_file(
-  //     mesa_root + filePath + "depth_" + std::to_string(draw + 1) + ".bin",
-  //     depth_after, size);
-
   unsigned tile_size = 16;
   std::vector<unsigned> drawed_pixels;
+  std::vector<std::vector<std::vector<float>>> attribs;
   std::vector<std::vector<float>> in_pos;
   std::vector<std::vector<float>> in_uv;
   std::vector<std::vector<float>> in_normal;
   std::unordered_map<unsigned, unsigned> pixel_map;
   std::vector<std::vector<unsigned>> tile_map;
   tile_map.resize(FBO->width * FBO->height / tile_size / tile_size);
+  attribs.resize(out_attrib_count);
   for (std::vector<std::vector<unsigned>>::iterator prim = primitives.begin();
        prim < primitives.end(); prim++) {
     float x1 = vertex_screen[(*prim)[0]][0];
@@ -1556,9 +1536,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
         if (u < 0 || v < 0 || w < 0) {
           continue;
         }
-        // u /= VertexMeta->vertex_out[0][(*prim)[0] * 4 + 3];
-        // v /= VertexMeta->vertex_out[0][(*prim)[1] * 4 + 3];
-        // w /= VertexMeta->vertex_out[0][(*prim)[2] * 4 + 3];
+        // u /= VertexMeta->vertex_out[out_pos][(*prim)[0] * 4 + 3];
+        // v /= VertexMeta->vertex_out[out_pos][(*prim)[1] * 4 + 3];
+        // w /= VertexMeta->vertex_out[out_pos][(*prim)[2] * 4 + 3];
         // float sum = u + v + w;
         // u /= sum;
         // v /= sum;
@@ -1570,69 +1550,146 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
         if (depth < FBO->depthout[pixel]) {
           continue;
         }
-        // depth buffer bin file is flipped
-        unsigned depth_bin_pixel = (FBO->height - y - 1) * FBO->width + x;
-        // if (memcmp(&depth_before[depth_bin_pixel], &depth_after[depth_bin_pixel], sizeof(float)) == 0) {
-        //   continue;
-        // }
-        count++;
         if (DEBUG_RAST) {
           FBO->fbo[(pixel) * 4] = r;
           FBO->fbo[(pixel) * 4 + 1] = g;
           FBO->fbo[(pixel) * 4 + 2] = b;
           FBO->fbo[(pixel) * 4 + 3] = 1.0f;
         }
-        std::vector<float> pos;
-        pos.push_back(x);
-        pos.push_back(y);
-        pos.push_back(vertex_screen[(*prim)[0]][2]);
-        pos.push_back(vertex_screen[(*prim)[0]][3]);
-        std::vector<float> tex;
-        float tex_u = VertexMeta->vertex_out[1][2 * (*prim)[0]] * u +
-                      VertexMeta->vertex_out[1][2 * (*prim)[1]] * v +
-                      VertexMeta->vertex_out[1][2 * (*prim)[2]] * w;
-        float tex_v = VertexMeta->vertex_out[1][2 * (*prim)[0] + 1] * u +
-                      VertexMeta->vertex_out[1][2 * (*prim)[1] + 1] * v +
-                      VertexMeta->vertex_out[1][2 * (*prim)[2] + 1] * w;
-        tex.push_back(tex_u);
-        tex.push_back(tex_v);
-        std::vector<float> normal;
-        // normal.push_back(VertexMeta->vertex_out[2][3 * (*prim)[0]]);
-        // normal.push_back(VertexMeta->vertex_out[2][3 * (*prim)[0] + 1]);
-        // normal.push_back(VertexMeta->vertex_out[2][3 * (*prim)[0] + 2]);
-        float n0 = VertexMeta->vertex_out[2][3 * (*prim)[0]] * u 
-                  + VertexMeta->vertex_out[2][3 * (*prim)[1]] * v
-                  + VertexMeta->vertex_out[2][3 * (*prim)[2]] * w;
-        float n1 = VertexMeta->vertex_out[2][3 * (*prim)[0] + 1] * u 
-                  + VertexMeta->vertex_out[2][3 * (*prim)[1] + 1] * v
-                  + VertexMeta->vertex_out[2][3 * (*prim)[2] + 1] * w;
-        float n2 = VertexMeta->vertex_out[2][3 * (*prim)[0] + 2] * u 
-                  + VertexMeta->vertex_out[2][3 * (*prim)[1] + 2] * v
-                  + VertexMeta->vertex_out[2][3 * (*prim)[2] + 2] * w;
-        float norm = sqrt(n0 * n0 + n1 * n1 + n2 * n2);
-        n0 /= norm;
-        n1 /= norm;
-        n2 /= norm;
-        normal.push_back(n0);
-        normal.push_back(n1);
-        normal.push_back(n2);
-        if (false) {
-        // if (pixel_map.find(pixel) != pixel_map.end()) {
-          if (depth > FBO->depthout[pixel]) {
-            in_pos[pixel_map[pixel]] = pos;
-            in_uv[pixel_map[pixel]] = tex;
-            in_normal[pixel_map[pixel]] = normal;
+
+        for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+          std::vector<float> vec;
+          switch (out_attrib_size[attrib]) {
+            case 8: {
+              // vec2
+              float v0 = VertexMeta->vertex_out[attrib][2 * (*prim)[0]] * u +
+                        VertexMeta->vertex_out[attrib][2 * (*prim)[1]] * v +
+                        VertexMeta->vertex_out[attrib][2 * (*prim)[2]] * w;
+              float v1 = VertexMeta->vertex_out[attrib][2 * (*prim)[0] + 1] * u +
+                        VertexMeta->vertex_out[attrib][2 * (*prim)[1] + 1] * v +
+                        VertexMeta->vertex_out[attrib][2 * (*prim)[2] + 1] * w;
+              vec.push_back(v0);
+              vec.push_back(v1);
+              break;
+            }
+            case 12: {
+              // vec3
+              float v0 = VertexMeta->vertex_out[attrib][3 * (*prim)[0]] * u +
+                        VertexMeta->vertex_out[attrib][3 * (*prim)[1]] * v +
+                        VertexMeta->vertex_out[attrib][3 * (*prim)[2]] * w;
+              float v1 = VertexMeta->vertex_out[attrib][3 * (*prim)[0] + 1] * u +
+                        VertexMeta->vertex_out[attrib][3 * (*prim)[1] + 1] * v +
+                        VertexMeta->vertex_out[attrib][3 * (*prim)[2] + 1] * w;
+              float v2 = VertexMeta->vertex_out[attrib][3 * (*prim)[0] + 2] * u +
+                        VertexMeta->vertex_out[attrib][3 * (*prim)[1] + 2] * v +
+                        VertexMeta->vertex_out[attrib][3 * (*prim)[2] + 2] * w;
+              // TODO: change to the index of normal
+              // if (attrib == 0) {
+              //   float norm = sqrt(v0 * v0 + v1 * v1 + v2 * v2);
+              //   v0 /= norm;
+              //   v1 /= norm;
+              //   v2 /= norm;
+              // }
+              vec.push_back(v0);
+              vec.push_back(v1);
+              vec.push_back(v2);
+              break;
+            }
+            case 16: {
+              // vec3
+              float v0 = VertexMeta->vertex_out[attrib][4 * (*prim)[0]] * u +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[1]] * v +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[2]] * w;
+              float v1 = VertexMeta->vertex_out[attrib][4 * (*prim)[0] + 1] * u +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[1] + 1] * v +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[2] + 1] * w;
+              float v2 = VertexMeta->vertex_out[attrib][4 * (*prim)[0] + 2] * u +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[1] + 2] * v +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[2] + 2] * w;
+              float v3 = VertexMeta->vertex_out[attrib][4 * (*prim)[0] + 3] * u +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[1] + 3] * v +
+                        VertexMeta->vertex_out[attrib][4 * (*prim)[2] + 3] * w;
+              vec.push_back(v0);
+              vec.push_back(v1);
+              vec.push_back(v2);
+              vec.push_back(v3);
+              break;
+            }
+            default: {
+              printf("unsupported vertex out attribute size\n");
+              // just add it
+              assert(0);
+            }
           }
+          // if (pixel_map.find(pixel) != pixel_map.end() &&
+          //     depth > FBO->depthout[pixel]) {
+          if (false) {
+            attribs[attrib][pixel_map[pixel]] = vec;
+          } else {
+            attribs[attrib].push_back(vec);
+            assert(vec.size() == attribs[attrib][0].size());
+          }
+        }
+        // if (pixel_map.find(pixel) != pixel_map.end() &&
+        //       depth > FBO->depthout[pixel]) {
+        if (false) {
+          
         } else {
-          in_pos.push_back(pos);
-          in_uv.push_back(tex);
-          in_normal.push_back(normal);
+          pixel_map[pixel] = attribs[0].size() - 1;
+          tile_map[tile_id].push_back(attribs[0].size() - 1);
+          FBO->thread_info_pixel.push_back(pixel);
         }
         FBO->depthout[pixel] = depth;
-        pixel_map[pixel] = in_pos.size() - 1;
-        tile_map[tile_id].push_back(in_pos.size() - 1);
-        FBO->thread_info_vertex.push_back((*prim)[0]);
-        FBO->thread_info_pixel.push_back(pixel);
+        // std::vector<float> pos;
+        // pos.push_back(x);
+        // pos.push_back(y);
+        // pos.push_back(vertex_screen[(*prim)[0]][2]);
+        // pos.push_back(vertex_screen[(*prim)[0]][3]);
+        // std::vector<float> tex;
+        // float tex_u = VertexMeta->vertex_out[1][2 * (*prim)[0]] * u +
+        //               VertexMeta->vertex_out[1][2 * (*prim)[1]] * v +
+        //               VertexMeta->vertex_out[1][2 * (*prim)[2]] * w;
+        // float tex_v = VertexMeta->vertex_out[1][2 * (*prim)[0] + 1] * u +
+        //               VertexMeta->vertex_out[1][2 * (*prim)[1] + 1] * v +
+        //               VertexMeta->vertex_out[1][2 * (*prim)[2] + 1] * w;
+        // tex.push_back(tex_u);
+        // tex.push_back(tex_v);
+        // std::vector<float> normal;
+        // float n0 = VertexMeta->vertex_out[2][3 * (*prim)[0]] * u 
+        //           + VertexMeta->vertex_out[2][3 * (*prim)[1]] * v
+        //           + VertexMeta->vertex_out[2][3 * (*prim)[2]] * w;
+        // float n1 = VertexMeta->vertex_out[2][3 * (*prim)[0] + 1] * u 
+        //           + VertexMeta->vertex_out[2][3 * (*prim)[1] + 1] * v
+        //           + VertexMeta->vertex_out[2][3 * (*prim)[2] + 1] * w;
+        // float n2 = VertexMeta->vertex_out[2][3 * (*prim)[0] + 2] * u 
+        //           + VertexMeta->vertex_out[2][3 * (*prim)[1] + 2] * v
+        //           + VertexMeta->vertex_out[2][3 * (*prim)[2] + 2] * w;
+        // float norm = sqrt(n0 * n0 + n1 * n1 + n2 * n2);
+        // n0 /= norm;
+        // n1 /= norm;
+        // n2 /= norm;
+        // normal.push_back(n0);
+        // normal.push_back(n1);
+        // normal.push_back(n2);
+        // if (pixel_map.find(pixel) != pixel_map.end() &&
+        //     depth > FBO->depthout[pixel]) {
+        //   in_pos[pixel_map[pixel]] = pos;
+        //   in_uv[pixel_map[pixel]] = tex;
+        //   in_normal[pixel_map[pixel]] = normal;
+        //   FBO->depthout[pixel] = depth;
+        // } else {
+        //   in_pos.push_back(pos);
+        //   in_uv.push_back(tex);
+        //   in_normal.push_back(normal);
+        //   FBO->depthout[pixel] = depth;
+        //   pixel_map[pixel] = in_pos.size() - 1;
+        //   tile_map[tile_id].push_back(in_pos.size() - 1);
+        //   FBO->thread_info_vertex.push_back((*prim)[0]);
+        //   FBO->thread_info_pixel.push_back(pixel);
+
+        //   attribs[0].push_back(normal);
+        //   attribs[1].push_back(normal);
+        // }
       }
     }
   }
@@ -1640,27 +1697,26 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   // delete(depth_after);
   // delete(depth_before);
 
-  printf("total frags collected - %u\n",in_pos.size());
+  printf("total frags collected - %u\n",FBO->thread_info_pixel.size());
 
   if (!DEBUG_RAST) {
   // copy vertex data to gpu
-  free(VertexMeta->vertex_out[0]);
-  free(VertexMeta->vertex_out[1]);
-  free(VertexMeta->vertex_out[2]);
+  // free(VertexMeta->vertex_out[0]);
+  // free(VertexMeta->vertex_out[1]);
+  // free(VertexMeta->vertex_out[2]);
 
-  VertexMeta->vertex_out_count[0] = in_pos.size() * in_pos[0].size();
-  VertexMeta->vertex_out_stride[0] = in_pos[0].size()* sizeof(float);
-  VertexMeta->vertex_out_size[0] = in_pos.size() * in_pos[0].size() * sizeof(float);
-  VertexMeta->vertex_out_count[1] = in_uv.size() * in_uv[0].size();
-  VertexMeta->vertex_out_stride[1] = in_uv[0].size() * sizeof(float);
-  VertexMeta->vertex_out_size[1] = in_uv.size() * in_uv[0].size() * sizeof(float);
-  VertexMeta->vertex_out_count[2] = in_normal.size() * in_normal[0].size();
-  VertexMeta->vertex_out_stride[2] = in_normal[0].size() * sizeof(float);
-  VertexMeta->vertex_out_size[2] = in_normal.size() * in_normal[0].size() * sizeof(float);
+  for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+    free(VertexMeta->vertex_out[attrib]);
 
-  VertexMeta->vertex_out[0] = new float[VertexMeta->vertex_out_count[0]];
-  VertexMeta->vertex_out[1] = new float[VertexMeta->vertex_out_count[1]];
-  VertexMeta->vertex_out[2] = new float[VertexMeta->vertex_out_count[2]];
+    VertexMeta->vertex_out_count[attrib] =
+        attribs[attrib].size() * attribs[attrib][0].size();
+    VertexMeta->vertex_out_stride[attrib] =
+        attribs[attrib][0].size() * sizeof(float);
+    VertexMeta->vertex_out_size[attrib] =
+        attribs[attrib].size() * attribs[attrib][0].size() * sizeof(float);
+
+    VertexMeta->vertex_out[attrib] = new float[VertexMeta->vertex_out_count[attrib]];
+  }
 
   std::vector<unsigned> pixel_index = FBO->thread_info_pixel;
   FBO->thread_info_pixel.clear();
@@ -1668,21 +1724,28 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   for (unsigned tile = 0; tile < tile_map.size(); tile++) {
     for (unsigned frag = 0; frag < tile_map[tile].size(); frag++) {
       unsigned i = tile_map[tile][frag];
-      for (unsigned j = 0; j < in_pos[i].size(); j++) {
-        VertexMeta->vertex_out[0][index * in_pos[i].size() + j] = in_pos[i][j];
-      }
-      for (unsigned j = 0; j < in_uv[i].size(); j++) {
-        VertexMeta->vertex_out[1][index * in_uv[i].size() + j] = in_uv[i][j];
-      }
-      for (unsigned j = 0; j < in_normal[i].size(); j++) {
-        VertexMeta->vertex_out[2][index * in_normal[i].size() + j] =
-            in_normal[i][j];
+      for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+        for (unsigned j = 0; j < attribs[attrib][i].size(); j++) {
+          VertexMeta
+              ->vertex_out[attrib][index * attribs[attrib][i].size() + j] =
+              attribs[attrib][i][j];
+        }
       }
       FBO->thread_info_pixel.push_back(pixel_index[i]);
       index++;
     }
   }
   assert(pixel_index.size() == FBO->thread_info_pixel.size());
+
+  // for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+  //   for (unsigned i = 0; i < attribs[attrib].size(); i++) {
+  //     for (unsigned j = 0; j < attribs[attrib][i].size(); j++) {
+  //       VertexMeta->vertex_out[attrib][i * attribs[attrib][i].size() + j] =
+  //           attribs[attrib][i][j];
+  //     }
+  //   }
+  // }
+
   // for (unsigned i = 0; i < in_pos.size(); i++) {
   //   for (unsigned j = 0; j < in_pos[i].size(); j++) {
   //     VertexMeta->vertex_out[0][i * in_pos[i].size() + j] = in_pos[i][j];
@@ -1695,29 +1758,39 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   //   }
   // }
 
-  VertexMeta->vertex_out_devptr[0] =
-      context->get_device()->get_gpgpu()->gpu_malloc(
-          VertexMeta->vertex_out_size[0]);
-  VertexMeta->vertex_out_devptr[1] =
-      context->get_device()->get_gpgpu()->gpu_malloc(
-          VertexMeta->vertex_out_size[1]);
-  VertexMeta->vertex_out_devptr[2] =
-      context->get_device()->get_gpgpu()->gpu_malloc(
-          VertexMeta->vertex_out_size[2]);
-  context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[0], VertexMeta->vertex_out[0],
-      VertexMeta->vertex_out_size[0]);
-  context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[1], VertexMeta->vertex_out[1],
-      VertexMeta->vertex_out_size[1]);
-  context->get_device()->get_gpgpu()->memcpy_to_gpu(
-      VertexMeta->vertex_out_devptr[2], VertexMeta->vertex_out[2],
-      VertexMeta->vertex_out_size[2]);
+  for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+    VertexMeta->vertex_out_devptr[attrib] =
+        context->get_device()->get_gpgpu()->gpu_malloc(
+            VertexMeta->vertex_out_size[attrib]);
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(
+        VertexMeta->vertex_out_devptr[attrib], VertexMeta->vertex_out[attrib],
+        VertexMeta->vertex_out_size[attrib]);
+  }
+  // VertexMeta->vertex_out_devptr[0] =
+  //     context->get_device()->get_gpgpu()->gpu_malloc(
+  //         VertexMeta->vertex_out_size[0]);
+  // VertexMeta->vertex_out_devptr[1] =
+  //     context->get_device()->get_gpgpu()->gpu_malloc(
+  //         VertexMeta->vertex_out_size[1]);
+  // VertexMeta->vertex_out_devptr[2] =
+  //     context->get_device()->get_gpgpu()->gpu_malloc(
+  //         VertexMeta->vertex_out_size[2]);
+  // context->get_device()->get_gpgpu()->memcpy_to_gpu(
+  //     VertexMeta->vertex_out_devptr[0], VertexMeta->vertex_out[0],
+  //     VertexMeta->vertex_out_size[0]);
+  // context->get_device()->get_gpgpu()->memcpy_to_gpu(
+  //     VertexMeta->vertex_out_devptr[1], VertexMeta->vertex_out[1],
+  //     VertexMeta->vertex_out_size[1]);
+  // context->get_device()->get_gpgpu()->memcpy_to_gpu(
+  //     VertexMeta->vertex_out_devptr[2], VertexMeta->vertex_out[2],
+  //     VertexMeta->vertex_out_size[2]);
   
 
   // pixel shaders
-  unsigned frag_count = in_pos.size();
-  run_shader(1,frag_count);
+  VulkanRayTracing::is_FS = true;
+  unsigned frag_count = FBO->thread_info_pixel.size();
+  VulkanRayTracing::thread_count = frag_count;
+  run_shader(1,thread_count);
 
   // copy back framebuffer and dump
   context->get_device()->get_gpgpu()->memcpy_from_gpu(FBO->fbo, FBO->fbo_dev,
@@ -1750,10 +1823,16 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
           FBO->fbo[FBO->thread_info_pixel[i] * 4 + 2] != 0 ||
           FBO->fbo[FBO->thread_info_pixel[i] * 4 + 3] != 0)) {
       assert(0);
-    }
+    } 
+    // else {
+    //   printf("pixel %u written : [%f, %f, %f, %f]\n", i,
+    //          FBO->fbo[FBO->thread_info_pixel[i] * 4],
+    //          FBO->fbo[FBO->thread_info_pixel[i] * 4 + 1],
+    //          FBO->fbo[FBO->thread_info_pixel[i] * 4 + 2],
+    //          FBO->fbo[FBO->thread_info_pixel[i] * 4 + 3]);
+    // }
   }
   FBO->thread_info_pixel.clear();
-  FBO->thread_info_vertex.clear();
 
   // save FBO and depth buffer to jpg
   std::string depth_file =
@@ -1769,9 +1848,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   system(("rm " + depth_file + ".bin").c_str());
   printf("Drawcall #%u Done\n", draw);
   draw++;
-  delete(VertexMeta->vertex_out[0]);
-  delete(VertexMeta->vertex_out[1]);
-  delete(VertexMeta->vertex_out[2]);
+  for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+    delete VertexMeta->vertex_out[attrib];
+  }
   delete(VertexMeta);
   
   VertexMeta = new struct vertex_metadata();
@@ -1796,35 +1875,45 @@ void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr) {
 }
 
 uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
-                                         uint32_t offset) {
+                                         uint32_t tid) {
   // check if vertex data is in range
-  if ((offset + VertexMeta->vertex_stride[buffer_index] / 4) >
-      VertexMeta->vertex_count[buffer_index]) {
-    // out of range
-    return VertexMeta->vertex_addr[buffer_index];
-  }
+  // if ((offset + VertexMeta->vertex_stride[buffer_index] / 4) >
+  //     VertexMeta->vertex_count[buffer_index]) {
+  //   // out of range
+  //   return VertexMeta->vertex_addr[buffer_index];
+  // }
 
-  return VertexMeta->vertex_addr[buffer_index] + offset;
+  // return VertexMeta->vertex_addr[buffer_index] + offset;
+  float *base =
+      (float*) VertexMeta->vertex_addr[0] + tid * VertexMeta->vertex_stride[0] / 4;
+  if (tid >= VulkanRayTracing::thread_count) {
+    return base;
+  }
+  assert(tid * VertexMeta->vertex_stride[0] / 4 <
+         VertexMeta->vertex_count[0]);
+  return base + (attrib_stride[buffer_index] / 4);
 }
 
 uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
-                                            uint32_t offset) {
-  // vertex position buffer change from vec3 -> vec4
-  if (offset + VertexMeta->vertex_out_stride[buffer_index] / 4 >
-      VertexMeta->vertex_out_count[buffer_index]) {
+                                            uint32_t tid) {
+  unsigned offset = tid * VertexMeta->vertex_out_stride[buffer_index] / 4;
+  // if (offset + VertexMeta->vertex_out_stride[buffer_index] / 4 >
+  //     VertexMeta->vertex_out_count[buffer_index]) {
+  if (tid >= VulkanRayTracing::thread_count) {
     // out of range
     return VertexMeta->vertex_out_devptr[buffer_index];
   }
+  assert(offset < VertexMeta->vertex_out_count[buffer_index]);
   return VertexMeta->vertex_out_devptr[buffer_index] + offset;
 }
 
 uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
   // get pixel coord
-  if((offset / 4) >= FBO->thread_info_pixel.size()) {
+  if((offset) >= VulkanRayTracing::thread_count) {
     return FBO->fbo_dev + FBO->thread_info_pixel[0];
   }
-  assert((FBO->thread_info_pixel[offset / 4] * 4) < FBO->fbo_count);
-  return FBO->fbo_dev + FBO->thread_info_pixel[offset / 4] * 4;
+  assert((FBO->thread_info_pixel[offset] * 4) < FBO->fbo_count);
+  return FBO->fbo_dev + FBO->thread_info_pixel[offset] * 4;
 }
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(
@@ -2451,8 +2540,6 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
 
     VertexMeta->vertex_size[setID] = size;
     VertexMeta->vertex_count[setID] = size / 4;
-    VertexMeta->vertex_out_count[setID] = size / 4;
-    VertexMeta->vertex_out_size[setID] = size;
     // Data to dump
     FILE *fp,*mp;
     char *mesa_root = getenv("MESA_ROOT");
@@ -2498,6 +2585,7 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     // fclose(fp);
 
 }
+
 void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t descID, uint32_t binding, VkDescriptorType type)
 {
     anv_descriptor *desc_offset = ((anv_descriptor*)((void*)desc)); // offset for raytracing_extended

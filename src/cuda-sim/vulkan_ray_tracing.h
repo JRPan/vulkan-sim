@@ -263,6 +263,8 @@ private:
 
 
 public:
+    static bool is_FS;
+    static unsigned thread_count;
     static void traceRay( // called by raygen shader
                        VkAccelerationStructureKHR _topLevelAS,
     				   uint rayFlags,
@@ -294,8 +296,8 @@ public:
         struct VkViewport *viewports);
     static void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned size);
     static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr);
-    static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t offset);
-    static uint64_t getVertexOutAddr(uint32_t buffer_index, uint32_t offset);
+    static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t tid);
+    static uint64_t getVertexOutAddr(uint32_t buffer_index, uint32_t tid);
     static uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset);
     static void vkCmdTraceRaysKHR( // called by vulkan application
                       void *raygen_sbt,
