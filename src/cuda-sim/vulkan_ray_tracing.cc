@@ -2258,7 +2258,7 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
 }
 
 void VulkanRayTracing::getTexture(struct anv_descriptor *desc, 
-                                    float x, float y, float lod, 
+                                    float x, float y, float level, float lod, 
                                     float &c0, float &c1, float &c2, float &c3, 
                                     std::vector<ImageMemoryTransactionRecord>& transactions,
                                     uint64_t launcher_offset)
@@ -2268,7 +2268,9 @@ void VulkanRayTracing::getTexture(struct anv_descriptor *desc,
     if (true)
     // if (use_external_launcher)
     {
-        pixel = get_interpolated_pixel((anv_image_view*) desc, (anv_sampler*) desc, x, y, transactions, launcher_offset); // cast back to metadata later
+      pixel = get_interpolated_pixel(
+          (anv_image_view *)desc, (anv_sampler *)desc, x, y, level,
+          transactions, launcher_offset);  // cast back to metadata later
     }
     else 
     {
@@ -2282,7 +2284,7 @@ void VulkanRayTracing::getTexture(struct anv_descriptor *desc,
         assert(image->planes[0].surface.isl.tiling == ISL_TILING_Y0);
         assert(sampler->conversion == NULL);
 
-        pixel = get_interpolated_pixel(image_view, sampler, x, y, transactions);
+        pixel = get_interpolated_pixel(image_view, sampler, x, y,level, transactions);
     }
 
     TXL_DPRINTF("Setting transaction type to TEXTURE_LOAD\n");

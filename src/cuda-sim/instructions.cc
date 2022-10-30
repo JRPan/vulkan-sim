@@ -6130,6 +6130,10 @@ void tex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   src7_data = thread->get_operand_value(src7, src7, F32_TYPE, thread, 1);
   float y = src7_data.f32;
 
+  const operand_info &src8 = pI->operand_lookup(8);
+  src8_data = thread->get_operand_value(src8, src8, F32_TYPE, thread, 1);
+  float z = src8_data.f32;
+
   // const operand_info &src8 = pI->operand_lookup(8);
   // src8_data = thread->get_operand_value(src8, src8, F32_TYPE, thread, 1);
   float lod = 0;
@@ -6140,7 +6144,7 @@ void tex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   char *workload = getenv("VULKAN_SIM_LAUNCHER_WORKLOAD");
 
   std::vector<ImageMemoryTransactionRecord> transactions;
-  VulkanRayTracing::getTexture(desc, x, y, lod, c0, c1, c2, c3, transactions,
+  VulkanRayTracing::getTexture(desc, x, y,z, lod, c0, c1, c2, c3, transactions,
                                offset_reg.u64);
 
   const operand_info &dst0 = pI->operand_lookup(0);
@@ -6681,7 +6685,7 @@ void txl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
 
   std::vector<ImageMemoryTransactionRecord> transactions;
-  VulkanRayTracing::getTexture(desc, x, y, lod, c0, c1, c2, c3, transactions, offset_reg.u64);
+  VulkanRayTracing::getTexture(desc, x, y,0, lod, c0, c1, c2, c3, transactions, offset_reg.u64);
 
   const operand_info &dst2 = pI->operand_lookup(2);
   const operand_info &dst3 = pI->operand_lookup(3);
@@ -7083,7 +7087,7 @@ void image_deref_load_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   float c0, c1, c2, c3;
 
   std::vector<ImageMemoryTransactionRecord> transactions;
-  VulkanRayTracing::getTexture(desc, x, y, 0, c0, c1, c2, c3, transactions); // MRS_TODO: x and y are uint
+  VulkanRayTracing::getTexture(desc, x, y,0, 0, c0, c1, c2, c3, transactions); // MRS_TODO: x and y are uint
 
   const operand_info &dst1 = pI->operand_lookup(1);
   const operand_info &dst2 = pI->operand_lookup(2);

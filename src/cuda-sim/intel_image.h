@@ -135,11 +135,13 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
         address = anv_address_map(image->planes[0].address);
     }
 
+    level = level % 5;
+    address = address + 1572928 * level;
     assert(n_planes == 1);
     assert(samples == 1);
     assert(tiling == VK_IMAGE_TILING_OPTIMAL);
     assert(isl_tiling_mode == ISL_TILING_Y0);
-    assert(level == 0);
+    // assert(level == 0);
 
     assert(0 <= x && x < width);
     assert(0 <= y && y < height);
@@ -265,7 +267,7 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
     }
 }
 
-Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampler *sampler, float x, float y, std::vector<ImageMemoryTransactionRecord>& transactions, uint64_t launcher_offset = 0)
+Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampler *sampler, float x, float y, float level, std::vector<ImageMemoryTransactionRecord>& transactions, uint64_t launcher_offset = 0)
 {
     uint32_t width;
     uint32_t height;
@@ -321,7 +323,8 @@ Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampl
             assert(0 <= y_int && y_int < height);
 
             ImageMemoryTransactionRecord transaction;
-            Pixel pixel = load_image_pixel(image, x_int, y_int, 0, transaction, launcher_offset);
+            Pixel pixel = load_image_pixel(image, x_int, y_int, (uint32_t)level,
+                                           transaction, launcher_offset);
             transactions.push_back(transaction);
             TXL_DPRINTF("Adding (nearest) txl transaction: 0x%x\n", transaction.address);
             return pixel;
