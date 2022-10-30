@@ -3091,7 +3091,14 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
     }
     case SETP_OP: {
       unsigned cmpop = pI->get_cmpop();
-      sass << "ISETP";
+      unsigned i_type = pI->get_type();
+      if (i_type == S32_TYPE) {
+        sass << "ISETP";
+      } else if (i_type == U32_TYPE) {
+        sass << "ISETP";
+      }else if (i_type == F32_TYPE) {
+        sass << "FSETP";
+      }
       switch (cmpop) {
         case NE_OPTION:
           // NE
@@ -3103,6 +3110,9 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
           break;
         case EQ_OPTION:
           sass << ".EQ.AND";
+          break;
+        case LT_OPTION:
+          sass << ".LT.AND";
           break;
         default:
           assert(0);
@@ -3191,13 +3201,23 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
         sass << "F2F";
       } else if (to_type == F32_TYPE && from_type == S32_TYPE) {
         sass << "I2F";
+      }else if (to_type == F32_TYPE && from_type == U32_TYPE) {
+        sass << "I2F";
       } else {
         assert(0);
       }
       break;
     }
-    case NEG_OP: {
+    case NEG_OP:
+    case SIN_OP:
+    case COS_OP:
+    case LG2_OP:
+    case EX2_OP: {
       sass << "MUFU";
+      break;
+    }
+    case BRA_OP: {
+      sass << "BRA";
       break;
     }
       
