@@ -191,6 +191,8 @@ typedef struct vertex_metadata
 {
     // assuming all data are 4-Byte
     // *device* vertex buffer
+    std::vector<std::unordered_map<uint32_t, uint32_t>> vertex_map;
+    std::vector<float> vb;
     uint32_t* vertex_addr[MAX_VERTEX] = {NULL};
     // vertex buffer size
     uint32_t vertex_size[MAX_VERTEX] = {0};
@@ -203,7 +205,6 @@ typedef struct vertex_metadata
     uint32_t vertex_out_size[MAX_VERTEX] = {0};
     uint32_t vertex_out_count[MAX_VERTEX] = {0};
     uint32_t vertex_out_stride[MAX_VERTEX] = {0};
-    // std::bitset<47568> vertex_mask;
 
     struct anv_buffer* index_buffer = NULL;
     std::vector<std::vector<unsigned>> index_to_draw;

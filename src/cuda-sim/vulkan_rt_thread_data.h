@@ -78,94 +78,96 @@ typedef struct Vulkan_RT_thread_data {
       entry.name = name;
       unsigned buffer_index = -1;
       // TODO: update for each app
-      if (!VulkanRayTracing::is_FS) {
-        // VS in
-        if (name == "\%inPos") {
-          buffer_index = 0;
-          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
-        } else if (name == "\%inNormal") {
-          buffer_index = 1;
-          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
-        } else if (name == "\%inUV") {
-          buffer_index = 2;
-          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
-        }
-        else if (name == "\%instancePos") {
-          buffer_index = 4;
-          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
-        }
-        else if (name == "\%instanceRot") {
-          buffer_index = 5;
-          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
-        }
-        else if (name == "\%instanceScale") {
-          buffer_index = 6;
-          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
-        }
-        else if (name == "\%instanceTexIndex") {
-          buffer_index = 7;
-          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
-        }
-        // VS out
-        else if (name == "\%outNormal8") {
-          buffer_index = 0;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%") {
-          assert(0);
-          buffer_index = 1;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%outUV9") {
-          buffer_index = 2;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%outViewVec10") {
-          buffer_index = 3;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%outLightVec11") {
-          buffer_index = 4;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%field0") {
-          buffer_index = 5;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else {
-          entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
-        }
-      } else {
-        // FS in
-        if (name == "\%inNormal") {
-          buffer_index = 0;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%inColor") {
-          buffer_index = 1;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%inUV") {
-          buffer_index = 2;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%inViewVec") {
+      // instancing draw #0
+      // if (!VulkanRayTracing::is_FS) {
+      //   // VS in
+      //   if (name == "\%inPos") {
+      //     buffer_index = 0;
+      //     entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+      //   } else if (name == "\%inNormal") {
+      //     buffer_index = 1;
+      //     entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+      //   } else if (name == "\%inUV") {
+      //     buffer_index = 2;
+      //     entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+      //   }
+      //   else if (name == "\%instancePos") {
+      //     buffer_index = 4;
+      //     entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+      //   }
+      //   else if (name == "\%instanceRot") {
+      //     buffer_index = 5;
+      //     entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+      //   }
+      //   else if (name == "\%instanceScale") {
+      //     buffer_index = 6;
+      //     entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+      //   }
+      //   else if (name == "\%instanceTexIndex") {
+      //     buffer_index = 7;
+      //     entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+      //   }
+      //   // VS out
+      //   else if (name == "\%outNormal8") {
+      //     buffer_index = 0;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%") {
+      //     assert(0);
+      //     buffer_index = 1;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%outUV9") {
+      //     buffer_index = 2;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%outViewVec10") {
+      //     buffer_index = 3;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%outLightVec11") {
+      //     buffer_index = 4;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%field0") {
+      //     buffer_index = 5;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else {
+      //     entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+      //   }
+      // } else {
+      //   // FS in
+      //   if (name == "\%inNormal") {
+      //     buffer_index = 0;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%inColor") {
+      //     buffer_index = 1;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%inUV") {
+      //     buffer_index = 2;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%inViewVec") {
           
-          buffer_index = 3;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        } else if (name == "\%inLightVec") {
-          buffer_index = 4;
-          entry.address =
-              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
-        }
-        // FBO
-        else if (name == "\%outFragColor") {
-          entry.address = VulkanRayTracing::getFBOAddr(offset);
-        } else {
-          entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
-        }
-      }
+      //     buffer_index = 3;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   } else if (name == "\%inLightVec") {
+      //     buffer_index = 4;
+      //     entry.address =
+      //         VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+      //   }
+      //   // FBO
+      //   else if (name == "\%outFragColor") {
+      //     entry.address = VulkanRayTracing::getFBOAddr(offset);
+      //   } else {
+      //     entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+      //   }
+      // }
+
       // instancing draw #1
       // if (!VulkanRayTracing::is_FS) {
       //   // VS in
@@ -240,6 +242,57 @@ typedef struct Vulkan_RT_thread_data {
       //   }
       // }
 
+      if (!VulkanRayTracing::is_FS) {
+        // VS in
+        if (name == "\%position") {
+          buffer_index = 0;
+          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+        } else if (name == "\%texcoord_0") {
+          buffer_index = 1;
+          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+        } else if (name == "\%normal") {
+          buffer_index = 2;
+          entry.address = VulkanRayTracing::getVertexAddr(buffer_index, offset);
+        } 
+        // VS out
+        else if (name == "\%field0") {
+          buffer_index = 0;
+          entry.address =
+              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        } else if (name == "\%o_uv3") {
+          buffer_index = 1;
+          entry.address =
+              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        } else if (name == "\%o_normal4") {
+          buffer_index = 2;
+          entry.address =
+              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        } else {
+          entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+        }
+      }
+      else {
+        // FS in
+        if (name == "\%in_pos") {
+          buffer_index = 0;
+          entry.address =
+              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        } else if (name == "\%in_uv") {
+          buffer_index = 1;
+          entry.address =
+              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        } else if (name == "\%in_normal") {
+          buffer_index = 2;
+          entry.address =
+              VulkanRayTracing::getVertexOutAddr(buffer_index, offset);
+        }
+        // FBO
+        else if (name == "\%o_color") {
+          entry.address = VulkanRayTracing::getFBOAddr(offset);
+        } else {
+          entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+        }
+      }
         entry.size = size;
         variable_decleration_table.push_back(entry);
 

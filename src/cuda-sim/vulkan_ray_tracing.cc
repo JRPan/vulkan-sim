@@ -1236,7 +1236,7 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
   // TODO: choose correct shaders
-  shader_id = shader_id + 2;
+  // shader_id = shader_id + 2;
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
 
@@ -1285,20 +1285,41 @@ const bool writeImageBinary = true;
 unsigned draw = 0;
 #define SKIP_VS false
 #define SKIP_FS false
-unsigned DRAW_START = 1;
-unsigned DRAW_END = 1;
+unsigned DRAW_START = 0;
+unsigned DRAW_END = 5;
 
-// instancing Draw #0
+
+// workloads: 
+// render_passes:       0 
+// instancing draw #0:  1
+// instancing draw #1:  2
+#define WORKLOAD 0
+// other places need to be updated
+// this file - remember to update the draw counter range
+// vulkan-sim/src/cuda-sim/vulkan_rt_thread_data.h - shader input/output names
+
+#if WORKLOAD == 0
+unsigned vb_count = 3;
+// render_passes
+// unsigned attrib_size[] = {3};
+unsigned attrib_stride[] = {0};
+unsigned out_attrib_count = 3;
+unsigned out_attrib_size[] = {16,8,12};
+unsigned out_pos = 0;
+#elif WORKLOAD == 1 || WORKLOAD == 2
+// instancing
 // layout(location = 1) out vec3 outColor;
 // layout(location = 2) out vec2 outUV;
 // layout(location = 0) out vec3 outNormal;
 // layout(location = 4) out vec3 outLightVec;
 // layout(location = 3) out vec3 outViewVec;
-unsigned attrib_size[] = {3,3,2};
+unsigned vb_count = 1;
+// unsigned attrib_size[] = {3,3,2};
 unsigned attrib_stride[] = {0,12,24,32};
 unsigned out_attrib_count = 6;
 unsigned out_attrib_size[] = {12,12,8,12,12,16};
 unsigned out_pos = 5;
+#endif
 
 
 void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
@@ -1336,6 +1357,45 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   assert(FBO->fbo_dev);
   // could be different for different type of FBO
   // dump vertex buffer
+
+  unsigned group_size = 96;
+
+#if WORKLOAD == 0
+  // vertex buffer is 2 byte int
+  unsigned index_size = sizeof(u_int16_t);
+  u_int16_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+#elif WORKLOAD == 1 || WORKLOAD == 2
+  // vertex buffer is 4 byte int
+  unsigned index_size = sizeof(u_int32_t);
+  u_int16_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+#endif
+
+  unsigned num_group =
+      (VertexMeta->index_buffer->size / index_size) / group_size + 1;
+  VertexMeta->vertex_map.resize(num_group);
+  for (unsigned i = 0; i < VertexMeta->index_buffer->size / index_size;
+       i += 3) {
+    for (unsigned j = 0; j < 3; j++) {
+      unsigned vertex = index_buffer[i + j];
+      unsigned selected_vpc = i / group_size;
+      if (VertexMeta->vertex_map[selected_vpc].find(vertex) ==
+          VertexMeta->vertex_map[selected_vpc].end()) {
+        VertexMeta->vertex_map[selected_vpc][vertex] = VertexMeta->vb.size();
+        VertexMeta->vb.push_back(vertex);
+      }
+    }
+  }
+  printf("vertex count: %u\n", VertexMeta->vb.size());
+
+//   draw++;
+//   for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+//     delete VertexMeta->vertex_out[attrib];
+//   }
+//   delete (VertexMeta);
+
+//   VertexMeta = new struct vertex_metadata();
+//   return;
+
   unsigned vertex_count = -1;
   unsigned instance_count = -1;
   VulkanRayTracing::is_FS = false;
@@ -1353,11 +1413,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       } else {
         // all vertex buffer of the same draw should have the same vertex count
         // *except instancing
-        // assert(vertex_count ==
-        //        vbuffer[i].buffer->size / (pipeline->vb[i].stride));
-      }
-      if (i == 1) {
-        instance_count = vbuffer[i].buffer->size / (pipeline->vb[i].stride);
+#if WORKLOAD != 2
+        assert(vertex_count ==
+               vbuffer[i].buffer->size / (pipeline->vb[i].stride));
+#endif
       }
     }
   }
@@ -1367,10 +1426,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
   assert(vertex_count != -1);
 
-
-  thread_count = vertex_count;
+  thread_count = VertexMeta->vb.size();
+#if WORKLOAD == 2
+  instance_count = vbuffer[1].buffer->size / (pipeline->vb[1].stride);
   instance_count = 500;
   thread_count = thread_count * instance_count;
+#endif
 
   for (unsigned i = 0; i < out_attrib_count; i++) {
     VertexMeta->vertex_out_stride[i] = out_attrib_size[i];
@@ -1410,9 +1471,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
           VertexMeta->vertex_out_size[i]);
     }
   }
+
+#if WORKLOAD == 2
   for (unsigned i = 0; i < VertexMeta->vertex_out_count[1]; i++) {
     VertexMeta->vertex_out[1][i] = 1.0f;
   }
+#endif
 
   // vertex-post processing
   // tranform & clipping
@@ -1456,31 +1520,36 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     raw.push_back(VertexMeta->vertex_out[out_pos][i+3]);
     vertex_raw.push_back(raw);
   }
-//   assert(vertex_screen.size() == vertex_count);
-//   assert(vertex_ndc.size() == vertex_count);
+#if WORKLOAD != 2
+  assert(vertex_screen.size() == thread_count);
+  assert(vertex_ndc.size() == thread_count);
+#endif
 
 
   // Assemble into triangles using index buffer
-  uint32_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
   std::vector<std::vector<unsigned>> primitives;
-  for (unsigned instance = 0; instance < instance_count; instance ++) {
-  for (unsigned i = 0; i < VertexMeta->index_buffer->size / sizeof(uint32_t);
+#if WORKLOAD == 0 || WORKLOAD == 1
+  // uint16_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+  for (unsigned i = 0; i < VertexMeta->index_buffer->size / index_size;
        i += 3) {
+    unsigned selected_vpc = i / group_size;
     unsigned clipped = 0;
     std::vector<unsigned> prim;
+    // 3 because primitives are triangles
     for (unsigned j = 0; j < 3; j++) {
-      unsigned index = index_buffer[i + j] + instance * vertex_count;
-      prim.push_back(index);
+      unsigned vertex = index_buffer[i + j];
+      unsigned batched_index = VertexMeta->vertex_map[selected_vpc][vertex];
+      prim.push_back(batched_index);
       // (-w <= x,y,z <= w) equal to (fabs(x,y,z) > fbas(w))
-      if (fabs(vertex_raw[index][0]) > fabs(vertex_raw[index][3])) {
+      if (fabs(vertex_raw[batched_index][0]) > fabs(vertex_raw[batched_index][3])) {
         clipped++;
         continue;
       }
-      if (fabs(vertex_raw[index][1]) > fabs(vertex_raw[index][3])) {
+      if (fabs(vertex_raw[batched_index][1]) > fabs(vertex_raw[batched_index][3])) {
         clipped++;
         continue;
       }
-      if (fabs(vertex_raw[index][2]) > fabs(vertex_raw[index][3])) {
+      if (fabs(vertex_raw[batched_index][2]) > fabs(vertex_raw[batched_index][3])) {
         clipped++;
         continue;
       }
@@ -1489,7 +1558,65 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
       primitives.push_back(prim);
     }
   }
+// #elif WORKLOAD == 1
+//   // uint32_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+//   for (unsigned instance = 0; instance < instance_count; instance++) {
+//     for (unsigned i = 0; i < VertexMeta->index_buffer->size / index_size;
+//          i += 3) {
+//       unsigned clipped = 0;
+//       std::vector<unsigned> prim;
+//       for (unsigned j = 0; j < 3; j++) {
+//         unsigned index = index_buffer[i + j] + instance * vertex_count;
+//         prim.push_back(index);
+//         // (-w <= x,y,z <= w) equal to (fabs(x,y,z) > fbas(w))
+//         if (fabs(vertex_raw[index][0]) > fabs(vertex_raw[index][3])) {
+//           clipped++;
+//           continue;
+//         }
+//         if (fabs(vertex_raw[index][1]) > fabs(vertex_raw[index][3])) {
+//           clipped++;
+//           continue;
+//         }
+//         if (fabs(vertex_raw[index][2]) > fabs(vertex_raw[index][3])) {
+//           clipped++;
+//           continue;
+//         }
+//       }
+//       if (clipped < 3) {
+//         primitives.push_back(prim);
+//       }
+//     }
+//   }
+#elif WORKLOAD == 2
+//   uint32_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+  for (unsigned instance = 0; instance < instance_count; instance++) {
+    for (unsigned i = 0; i < VertexMeta->index_buffer->size / sizeof(uint32_t);
+         i += 3) {
+      unsigned clipped = 0;
+      std::vector<unsigned> prim;
+      for (unsigned j = 0; j < 3; j++) {
+        unsigned index = index_buffer[i + j] + instance * vertex_count;
+        prim.push_back(index);
+        // (-w <= x,y,z <= w) equal to (fabs(x,y,z) > fbas(w))
+        if (fabs(vertex_raw[index][0]) > fabs(vertex_raw[index][3])) {
+          clipped++;
+          continue;
+        }
+        if (fabs(vertex_raw[index][1]) > fabs(vertex_raw[index][3])) {
+          clipped++;
+          continue;
+        }
+        if (fabs(vertex_raw[index][2]) > fabs(vertex_raw[index][3])) {
+          clipped++;
+          continue;
+        }
+      }
+      if (clipped < 3) {
+        primitives.push_back(prim);
+      }
+    }
   }
+#endif
 
   printf("total primitives after clipping: %u\n", primitives.size());
 
@@ -1542,13 +1669,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
         if (u < 0 || v < 0 || w < 0) {
           continue;
         }
-        // u /= VertexMeta->vertex_out[out_pos][(*prim)[0] * 4 + 3];
-        // v /= VertexMeta->vertex_out[out_pos][(*prim)[1] * 4 + 3];
-        // w /= VertexMeta->vertex_out[out_pos][(*prim)[2] * 4 + 3];
-        // float sum = u + v + w;
-        // u /= sum;
-        // v /= sum;
-        // w /= sum;
         float depth = u * vertex_screen[(*prim)[0]][2] +
                       v * vertex_screen[(*prim)[1]][2] +
                       w * vertex_screen[(*prim)[2]][2];
@@ -1703,6 +1823,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     context->get_device()->get_gpgpu()->memcpy_to_gpu(
         VertexMeta->vertex_out_devptr[attrib], VertexMeta->vertex_out[attrib],
         VertexMeta->vertex_out_size[attrib]);
+    context->get_device()->get_gpgpu()->gtrace
+        << "MemcpyHtoD, 0x" << std::hex
+        << VertexMeta->vertex_out_devptr[attrib] << "," << std::dec
+        << VertexMeta->vertex_out_size[attrib] << std::endl;
   }
   
 
@@ -1729,7 +1853,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   fp = fopen((fbo_file + ".bin").c_str(), "wb+");
   fwrite(out, 1, FBO->fbo_size/4, fp);
   fclose(fp);
-  delete(out);
+  delete[](out);
   std::string fbo_cmd = "convert -depth 8 -size " + std::to_string(FBO->width) +
                         "x" + std::to_string(FBO->height) +
                         "+0 rgba:" + fbo_file + ".bin " + fbo_file + ".jpg";
@@ -1767,9 +1891,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   system(depth_cmd.c_str());
   system(("rm " + depth_file + ".bin").c_str());
   printf("Drawcall #%u Done\n", draw);
+
   draw++;
   for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
-    delete VertexMeta->vertex_out[attrib];
+    delete[] VertexMeta->vertex_out[attrib];
   }
   delete(VertexMeta);
   
@@ -1796,38 +1921,41 @@ void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr) {
 
 uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
                                          uint32_t tid) {
-  // check if vertex data is in range
-  // if ((offset + VertexMeta->vertex_stride[buffer_index] / 4) >
-  //     VertexMeta->vertex_count[buffer_index]) {
-  //   // out of range
-  //   return VertexMeta->vertex_addr[buffer_index];
+  // instancing (multiple vertex attributes)
+  // if (buffer_index < 4) {
+  //   unsigned real_id = tid % 205;
+  //   float *base =
+  //       (float*) VertexMeta->vertex_addr[0] + real_id * VertexMeta->vertex_stride[0] / 4;
+  //   if (tid >= thread_count) {
+  //       return gpgpusim_alloc(VertexMeta->vertex_stride[buffer_index] / 4);
+  //   }
+  //   assert(real_id * VertexMeta->vertex_stride[0] / 4 <
+  //           VertexMeta->vertex_count[0]);
+  //   return base + (attrib_stride[buffer_index] / 4);
+  // }
+  // else {
+  //   unsigned tmp_stride[] = {0,12,24,28};
+  //   buffer_index = buffer_index - 4;
+  //   unsigned real_id = tid / 205;
+  //   float *base =
+  //       (float*) VertexMeta->vertex_addr[1] + real_id * VertexMeta->vertex_stride[1] / 4;
+  //   if (tid >= thread_count) {
+  //       return gpgpusim_alloc(VertexMeta->vertex_stride[buffer_index] / 4);
+  //   }
+  //   assert(real_id * VertexMeta->vertex_stride[1] / 4 <
+  //           VertexMeta->vertex_count[1]);
+  //   return base + (tmp_stride[buffer_index] / 4);
   // }
 
-  // return VertexMeta->vertex_addr[buffer_index] + offset;
-  if (buffer_index < 4) {
-    unsigned real_id = tid % 205;
-    float *base =
-        (float*) VertexMeta->vertex_addr[0] + real_id * VertexMeta->vertex_stride[0] / 4;
-    if (tid >= thread_count) {
-        return gpgpusim_alloc(VertexMeta->vertex_stride[buffer_index] / 4);
-    }
-    assert(real_id * VertexMeta->vertex_stride[0] / 4 <
-            VertexMeta->vertex_count[0]);
-    return base + (attrib_stride[buffer_index] / 4);
+  // render_passes (single vertex attribute)
+  unsigned offset = tid * VertexMeta->vertex_stride[buffer_index] / 4;
+  if (tid >= VulkanRayTracing::thread_count) {
+    // out of range
+    return gpgpusim_alloc(VertexMeta->vertex_out_stride[buffer_index] / 4);
   }
-  else {
-    unsigned tmp_stride[] = {0,12,24,28};
-    buffer_index = buffer_index - 4;
-    unsigned real_id = tid / 205;
-    float *base =
-        (float*) VertexMeta->vertex_addr[1] + real_id * VertexMeta->vertex_stride[1] / 4;
-    if (tid >= thread_count) {
-        return gpgpusim_alloc(VertexMeta->vertex_stride[buffer_index] / 4);
-    }
-    assert(real_id * VertexMeta->vertex_stride[1] / 4 <
-            VertexMeta->vertex_count[1]);
-    return base + (tmp_stride[buffer_index] / 4);
-  }
+  assert(offset < VertexMeta->vertex_count[buffer_index]);
+  return VertexMeta->vertex_addr[buffer_index] + offset;
+
 }
 
 uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
@@ -2472,12 +2600,11 @@ void VulkanRayTracing::image_store(struct anv_descriptor* desc, uint32_t gl_Laun
 void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID) {
 
 
-    uint64_t* address = anv_address_map(vbuffer->address);
-    uint64_t size = vbuffer->size;
+    float* address = anv_address_map(vbuffer->address);
+    unsigned size = vbuffer->size;
+    unsigned stride = pipeline->vb[setID].stride;
+    unsigned attrib_per_vertex = stride /4;
     assert(size % 4 == 0);
-
-    VertexMeta->vertex_size[setID] = size;
-    VertexMeta->vertex_count[setID] = size / 4;
     // Data to dump
     FILE *fp,*mp;
     char *mesa_root = getenv("MESA_ROOT");
@@ -2485,12 +2612,14 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     // char *extension = ".vkvertexbuffer";
 
     // Vertex data
+    // if you want to use dumped vertex data, you need to either dump batched
+    // vertex (after indexing) or perform vertex batching on loaded vertex data.
+    // Right here it's saving raw vertex buffer from Mesa3D
+    // i.e. currently it can only be launched directly from Mesa3D.
     char fullPath[200];
     char metaPath[200];
     snprintf(fullPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexdata", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
     snprintf(metaPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexmeta", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
-    // File name format: setID_descID.vktexturedata
-
     fp = fopen(fullPath, "wb+");
     mp = fopen(metaPath, "w+");
     fwrite(address, 1, size, fp);
@@ -2498,29 +2627,32 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     fprintf(mp,"%u",pipeline->vb[setID].stride);
     fclose(mp);
 
+    VertexMeta->vertex_count[setID] = VertexMeta->vb.size() * attrib_per_vertex;
+    VertexMeta->vertex_size[setID] = VertexMeta->vertex_count[setID] * sizeof(float);
+
+    float *buffer = new float[VertexMeta->vertex_count[setID]];
+    for (int i = 0; i < VertexMeta->vb.size(); i++) {
+      unsigned index = VertexMeta->vb[i];
+      for (int j = 0; j < attrib_per_vertex; j++) {
+        buffer[i * attrib_per_vertex + j] =
+            address[index * attrib_per_vertex + j];
+        assert(index < (size / stride));
+        assert(i < VertexMeta->vertex_count[setID]);
+      }
+    }
+
     u_int32_t *devPtr;
     gpgpu_context *ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
-    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(
+        VertexMeta->vertex_size[setID]);
+    context->get_device()->get_gpgpu()->gtrace
+        << "MemcpyHtoD, 0x" << std::hex << devPtr << "," << std::dec
+        << VertexMeta->vertex_size[setID] << std::endl;
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(
+        devPtr, buffer, VertexMeta->vertex_size[setID]);
     VertexMeta->vertex_addr[setID] = devPtr;
-    // // Texture metadata
-    // snprintf(fullPath, sizeof(fullPath), "%s%s%d.vktexturemetadata", mesa_root, filePath, setID);
-    // fp = fopen(fullPath, "w+");
-    // // File name format: setID_descID.vktexturemetadata
-
-    // fprintf(fp, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", size, 
-    //                                              image_extent_width, 
-    //                                              image_extent_height, 
-    //                                              format, 
-    //                                              VkDescriptorTypeNum, 
-    //                                              image->n_planes, 
-    //                                              image->samples, 
-    //                                              image->tiling, 
-    //                                              image->planes[0].surface.isl.tiling,
-    //                                              image->planes[0].surface.isl.row_pitch_B,
-    //                                              filter);
-    // fclose(fp);
+    delete[] buffer;
 
 }
 

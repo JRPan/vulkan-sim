@@ -3441,7 +3441,7 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
-  // if (pI->source_line() == 217) {
+  // if (pI->source_line() == 288) {
   //     printf("tid %u reading %f\n", thread->get_uid() - 1, data.f32);
   // }
 }
@@ -5865,7 +5865,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
-    // if (pI->source_line() == 1018) {
+    // if (pI->source_line() == 714) {
     //   printf("tid %u writing %f\n", thread->get_uid() - 1,data.f32);
     // }
     mem->write(addr, size / 8, &data.s64, thread, pI);
