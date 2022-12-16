@@ -1234,11 +1234,13 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 // int CmdTraceRaysKHRID = 0;
 
+unsigned launched_blk = 0;
 void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
   // TODO: choose correct shaders
   // shader_id = shader_id + 2;
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
+  launched_blk = 0;
 
   shader_stage_info shader = VulkanRayTracing::shaders[shader_id];
   function_info *entry = context->get_kernel(shader.function_name);
@@ -1257,11 +1259,12 @@ void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
     if (entry->get_function_size() > 0) entry->do_pdom();
     entry->set_pdom();
   }
-
-  dim3 blockDim = dim3(64, 1, 1);
-  // dim3 gridDim = dim3(1, 1, 1);
-  dim3 gridDim = dim3((thread_count + 63) / 64, 1, 1);
-
+  unsigned block_size = 64;
+  unsigned block_count = (thread_count + block_size - 1) / block_size;
+//   unsigned block_count = 16 * 16;
+  context->get_device()->get_gpgpu()->gtrace << "block_dim, " << block_size << std::endl;
+  dim3 blockDim = dim3(block_size, 1, 1);
+  dim3 gridDim = dim3(block_count, 1, 1);
   gpgpu_ptx_sim_arg_list_t args;
   kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
       shader.function_name, args, gridDim, blockDim, context);
@@ -1278,6 +1281,27 @@ void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
     sleep(1);
     continue;
   }
+//   dim3 gridDim = dim3((thread_count + block_size - 1) / block_size, 1, 1);
+
+//   while (launched_blk < (thread_count + block_size - 1) / block_size) {
+//     gpgpu_ptx_sim_arg_list_t args;
+//     kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+//         shader.function_name, args, gridDim, blockDim, context);
+
+//     struct CUstream_st *stream = 0;
+
+//     stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
+//     ctx->the_gpgpusim->g_stream_manager->push(op);
+
+//     fflush(stdout);
+
+//     while (!op.is_done() && !op.get_kernel()->done()) {
+//       printf("waiting for op to finish\n");
+//       sleep(1);
+//       continue;
+//     }
+//     launched_blk += block_count;
+//   }
 }
 
 const bool writeImageBinary = true;
@@ -1422,7 +1446,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
   // Dump Descriptor Sets
   if (!use_external_launcher) {
-    dump_descriptor_sets(VulkanRayTracing::descriptorSet);
+    dump_descriptor_sets(VulkanRayTracing::descriptorSet, false);
   }
   assert(vertex_count != -1);
 
@@ -1514,6 +1538,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     view.push_back(ndc_w);
     vertex_screen.push_back(view);
 
+    assert(!isnan(VertexMeta->vertex_out[out_pos][i]));
     raw.push_back(VertexMeta->vertex_out[out_pos][i]);
     raw.push_back(VertexMeta->vertex_out[out_pos][i+1]);
     raw.push_back(VertexMeta->vertex_out[out_pos][i+2]);
@@ -1623,9 +1648,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   unsigned tile_size = 16;
   std::vector<unsigned> drawed_pixels;
   std::vector<std::vector<std::vector<float>>> attribs;
-  std::vector<std::vector<float>> in_pos;
-  std::vector<std::vector<float>> in_uv;
-  std::vector<std::vector<float>> in_normal;
   std::unordered_map<unsigned, unsigned> pixel_map;
   std::vector<std::vector<unsigned>> tile_map;
   tile_map.resize(FBO->width * FBO->height / tile_size / tile_size);
@@ -1647,7 +1669,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     float r = rand() % 255 / 255.f;
     float g = rand() % 255 / 255.f;
     float b = rand() % 255 / 255.f;
-    unsigned count = 0;
 
     assert(FBO->width % tile_size == 0);
     assert(FBO->height % tile_size == 0);
@@ -1747,24 +1768,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
               assert(0);
             }
           }
-          // if (pixel_map.find(pixel) != pixel_map.end() &&
-          //     depth > FBO->depthout[pixel]) {
-          if (false) {
-            attribs[attrib][pixel_map[pixel]] = vec;
-          } else {
-            attribs[attrib].push_back(vec);
-            assert(vec.size() == attribs[attrib][0].size());
-          }
+          attribs[attrib].push_back(vec);
+          assert(vec.size() == attribs[attrib][0].size());
         }
-        // if (pixel_map.find(pixel) != pixel_map.end() &&
-        //       depth > FBO->depthout[pixel]) {
-        if (false) {
-          
-        } else {
-          pixel_map[pixel] = attribs[0].size() - 1;
-          tile_map[tile_id].push_back(attribs[0].size() - 1);
-          FBO->thread_info_pixel.push_back(pixel);
-        }
+        pixel_map[pixel] = attribs[0].size() - 1;
+        tile_map[tile_id].push_back(attribs[0].size() - 1);
+        FBO->thread_info_pixel.push_back(pixel);
         FBO->depthout[pixel] = depth;
       }
     }
@@ -1807,14 +1816,14 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
   assert(pixel_index.size() == FBO->thread_info_pixel.size());
 
-  // for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
-  //   for (unsigned i = 0; i < attribs[attrib].size(); i++) {
-  //     for (unsigned j = 0; j < attribs[attrib][i].size(); j++) {
-  //       VertexMeta->vertex_out[attrib][i * attribs[attrib][i].size() + j] =
-  //           attribs[attrib][i][j];
-  //     }
-  //   }
-  // }
+//   for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+//     for (unsigned i = 0; i < attribs[attrib].size(); i++) {
+//       for (unsigned j = 0; j < attribs[attrib][i].size(); j++) {
+//         VertexMeta->vertex_out[attrib][i * attribs[attrib][i].size() + j] =
+//             attribs[attrib][i][j];
+//       }
+//     }
+//   }
 
   for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
     VertexMeta->vertex_out_devptr[attrib] =
@@ -1824,10 +1833,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
         VertexMeta->vertex_out_devptr[attrib], VertexMeta->vertex_out[attrib],
         VertexMeta->vertex_out_size[attrib]);
     context->get_device()->get_gpgpu()->gtrace
-        << "MemcpyHtoD, 0x" << std::hex
+        << "MemcpyHtoD," << std::hex
         << VertexMeta->vertex_out_devptr[attrib] << "," << std::dec
         << VertexMeta->vertex_out_size[attrib] << std::endl;
   }
+
+    dump_texture(VulkanRayTracing::descriptorSet);
   
 
   // pixel shaders
@@ -1866,7 +1877,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
           FBO->fbo[FBO->thread_info_pixel[i] * 4 + 1] != 0 ||
           FBO->fbo[FBO->thread_info_pixel[i] * 4 + 2] != 0 ||
           FBO->fbo[FBO->thread_info_pixel[i] * 4 + 3] != 0)) {
-      assert(0);
+    //   assert(0);`
     } 
     // else {
     //   printf("pixel %u written : [%f, %f, %f, %f]\n", i,
@@ -1899,6 +1910,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   delete(VertexMeta);
   
   VertexMeta = new struct vertex_metadata();
+  context->get_device()->get_gpgpu()->ignore_addr.clear();
   
 
   // system("rm -rf /home/pan251/vulkan-sim-root/mesa-vulkan-sim/gpgpusimShaders/");
@@ -1927,7 +1939,7 @@ uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
   //   float *base =
   //       (float*) VertexMeta->vertex_addr[0] + real_id * VertexMeta->vertex_stride[0] / 4;
   //   if (tid >= thread_count) {
-  //       return gpgpusim_alloc(VertexMeta->vertex_stride[buffer_index] / 4);
+  //       return 0;
   //   }
   //   assert(real_id * VertexMeta->vertex_stride[0] / 4 <
   //           VertexMeta->vertex_count[0]);
@@ -1940,7 +1952,7 @@ uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
   //   float *base =
   //       (float*) VertexMeta->vertex_addr[1] + real_id * VertexMeta->vertex_stride[1] / 4;
   //   if (tid >= thread_count) {
-  //       return gpgpusim_alloc(VertexMeta->vertex_stride[buffer_index] / 4);
+  //       return 0;
   //   }
   //   assert(real_id * VertexMeta->vertex_stride[1] / 4 <
   //           VertexMeta->vertex_count[1]);
@@ -1948,24 +1960,24 @@ uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
   // }
 
   // render_passes (single vertex attribute)
-  unsigned offset = tid * VertexMeta->vertex_stride[buffer_index] / 4;
-  if (tid >= VulkanRayTracing::thread_count) {
+  unsigned offset =
+      VertexMeta->vb[tid + launched_blk * 32] * VertexMeta->vertex_stride[buffer_index] / 4;
+  if (launched_blk * 32 + tid >= VulkanRayTracing::thread_count) {
     // out of range
-    return gpgpusim_alloc(VertexMeta->vertex_out_stride[buffer_index] / 4);
+    return 0;
   }
   assert(offset < VertexMeta->vertex_count[buffer_index]);
   return VertexMeta->vertex_addr[buffer_index] + offset;
-
 }
 
 uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
                                             uint32_t tid) {
-  unsigned offset = tid * VertexMeta->vertex_out_stride[buffer_index] / 4;
+  unsigned offset = (tid + launched_blk * 32) * VertexMeta->vertex_out_stride[buffer_index] / 4;
   // if (offset + VertexMeta->vertex_out_stride[buffer_index] / 4 >
   //     VertexMeta->vertex_out_count[buffer_index]) {
-  if (tid >= VulkanRayTracing::thread_count) {
+  if (launched_blk * 32 + tid >= VulkanRayTracing::thread_count) {
     // out of range
-    return gpgpusim_alloc(VertexMeta->vertex_out_stride[buffer_index] / 4);
+    return 0;
   }
   assert(offset < VertexMeta->vertex_out_count[buffer_index]);
   return VertexMeta->vertex_out_devptr[buffer_index] + offset;
@@ -1973,11 +1985,11 @@ uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
 
 uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
   // get pixel coord
-  if((offset) >= VulkanRayTracing::thread_count) {
-    return gpgpusim_alloc(16);
+  if((offset + launched_blk * 32) >= VulkanRayTracing::thread_count) {
+    return 0;
   }
-  assert((FBO->thread_info_pixel[offset] * 4) < FBO->fbo_count);
-  return FBO->fbo_dev + FBO->thread_info_pixel[offset] * 4;
+  assert((FBO->thread_info_pixel[offset + launched_blk * 32] * 4) < FBO->fbo_count);
+  return FBO->fbo_dev + FBO->thread_info_pixel[offset + launched_blk * 32] * 4;
 }
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(
@@ -1997,7 +2009,7 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     // Dump Descriptor Sets
     if (!use_external_launcher) 
     {
-        dump_descriptor_sets(VulkanRayTracing::descriptorSet);
+        dump_descriptor_sets(VulkanRayTracing::descriptorSet, true);
         dump_callparams_and_sbt(raygen_sbt, miss_sbt, hit_sbt, callable_sbt, is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
     }
 
@@ -2627,32 +2639,44 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     fprintf(mp,"%u",pipeline->vb[setID].stride);
     fclose(mp);
 
-    VertexMeta->vertex_count[setID] = VertexMeta->vb.size() * attrib_per_vertex;
-    VertexMeta->vertex_size[setID] = VertexMeta->vertex_count[setID] * sizeof(float);
-
-    float *buffer = new float[VertexMeta->vertex_count[setID]];
-    for (int i = 0; i < VertexMeta->vb.size(); i++) {
-      unsigned index = VertexMeta->vb[i];
-      for (int j = 0; j < attrib_per_vertex; j++) {
-        buffer[i * attrib_per_vertex + j] =
-            address[index * attrib_per_vertex + j];
-        assert(index < (size / stride));
-        assert(i < VertexMeta->vertex_count[setID]);
-      }
-    }
-
     u_int32_t *devPtr;
     gpgpu_context *ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
-    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(
-        VertexMeta->vertex_size[setID]);
-    context->get_device()->get_gpgpu()->gtrace
-        << "MemcpyHtoD, 0x" << std::hex << devPtr << "," << std::dec
-        << VertexMeta->vertex_size[setID] << std::endl;
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(
-        devPtr, buffer, VertexMeta->vertex_size[setID]);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
     VertexMeta->vertex_addr[setID] = devPtr;
-    delete[] buffer;
+    VertexMeta->vertex_size[setID] = size;
+    VertexMeta->vertex_count[setID] = size / 4;
+    context->get_device()->get_gpgpu()->gtrace
+        << "MemcpyHtoD," << std::hex << devPtr << "," << std::dec
+        << VertexMeta->vertex_size[setID] << std::endl;
+
+    // VertexMeta->vertex_count[setID] = VertexMeta->vb.size() * attrib_per_vertex;
+    // VertexMeta->vertex_size[setID] = VertexMeta->vertex_count[setID] * sizeof(float);
+
+    // float *buffer = new float[VertexMeta->vertex_count[setID]];
+    // for (int i = 0; i < VertexMeta->vb.size(); i++) {
+    //   unsigned index = VertexMeta->vb[i];
+    //   for (int j = 0; j < attrib_per_vertex; j++) {
+    //     buffer[i * attrib_per_vertex + j] =
+    //         address[index * attrib_per_vertex + j];
+    //     assert(index < (size / stride));
+    //     assert(i < VertexMeta->vertex_count[setID]);
+    //   }
+    // }
+
+    // u_int32_t *devPtr;
+    // gpgpu_context *ctx = GPGPU_Context();
+    // CUctx_st *context = GPGPUSim_Context(ctx);
+    // devPtr = context->get_device()->get_gpgpu()->gpu_malloc(
+    //     VertexMeta->vertex_size[setID]);
+    // context->get_device()->get_gpgpu()->gtrace
+    //     << "MemcpyHtoD, 0x" << std::hex << devPtr << "," << std::dec
+    //     << VertexMeta->vertex_size[setID] << std::endl;
+    // context->get_device()->get_gpgpu()->memcpy_to_gpu(
+    //     devPtr, buffer, VertexMeta->vertex_size[setID]);
+    // VertexMeta->vertex_addr[setID] = devPtr;
+    // delete[] buffer;
 
 }
 
@@ -2742,6 +2766,10 @@ void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID,
                            VkDescriptorTypeNum, image->n_planes, image->samples,
                            image->tiling, image->planes[0].surface.isl.tiling,
                            image->planes[0].surface.isl.row_pitch_B, filter);
+    context->get_device()->get_gpgpu()->gtrace
+        << "MemcpyHtoD," << std::hex
+        << devPtr << "," << std::dec
+        << size << std::endl;
 }
 
 
@@ -2976,10 +3004,39 @@ void VulkanRayTracing::dump_descriptor_set(uint32_t setID, uint32_t descID, void
     devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
     setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+    context->get_device()->get_gpgpu()->gtrace
+        << "MemcpyHtoD," << std::hex
+        << devPtr << "," << std::dec
+        << size << std::endl;
 }
 
+void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set) {
+  for (int i = 0; i < set->descriptor_count; i++) {
+    if (i == 2) {
+      i = 4;
+    }
+    struct anv_descriptor_set *set = VulkanRayTracing::descriptorSet;
 
-void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
+    const struct anv_descriptor_set_binding_layout *bind_layout =
+        &set->layout->binding[i];
+    struct anv_descriptor *desc =
+        &set->descriptors[bind_layout->descriptor_index];
+    void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+
+    assert(desc->type == bind_layout->type);
+
+    switch (desc->type) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
+        dumpTextures(desc, 0, i, i, desc->type);
+        break;
+      }
+    }
+  }
+}
+void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture)
 {
    for(int i = 0; i < set->descriptor_count; i++)
    {
@@ -3014,7 +3071,11 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
             case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
             {
                 //return desc;
-                dumpTextures(desc, 0, i, i, desc->type);
+                if (dump_texture)
+                {
+                    dumpTextures(desc, 0, i, i, desc->type);
+                }
+                // dumpTextures(desc, 0, i, i, desc->type);
                 break;
             }
 
@@ -3277,6 +3338,9 @@ void* VulkanRayTracing::gpgpusim_alloc(uint32_t size)
     gpgpu_context *ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
     void* devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    for (unsigned i = 0; i < size / 4; i ++) {
+        context->get_device()->get_gpgpu()->ignore_addr[(unsigned long) devPtr + i * 4] = true;
+    }
     if (g_debug_execution >= 3) {
         printf("GPGPU-Sim PTX: gpgpusim_allocing %zu bytes starting at 0x%llx..\n",
             size, (unsigned long long)devPtr);

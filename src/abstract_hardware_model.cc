@@ -3044,6 +3044,7 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   std::stringstream addr_str;
   addr_str << std::hex;
   int mem_count;
+  bool has_invalid_addr = false;
   
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
@@ -3241,6 +3242,10 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
         if (inst.active(t)) {
           unsigned tid = m_warp_size * warpId + t;
           addr_str << "0x" << m_thread[tid]->last_eaddr() << " ";
+          if (m_gpu->ignore_addr.find(m_thread[tid]->last_eaddr()) !=
+              m_gpu->ignore_addr.end()) {
+            has_invalid_addr = true;
+          }
         }
       }
       // 4 byte/thread, no compression
@@ -3277,6 +3282,15 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       assert(!pI->is_load());
       assert(!pI->is_store());
       sass << "0 ";
+  }
+  switch (pI->get_opcode()) {
+    case LD_OP:
+    case ST_OP:
+      if (has_invalid_addr) {
+        // no valid addr, don't print
+        // std::cout << sass.str() << std::endl;
+        return;
+      }
   }
   if (pI->get_opcode() != TEX_OP) {
     // TEX has multiple addrs. handled seperately

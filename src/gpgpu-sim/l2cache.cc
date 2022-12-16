@@ -515,6 +515,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
         bool read_sent = was_read_sent(events);
         MEM_SUBPART_DPRINTF("Probing L2 cache Address=%llx, status=%u\n",
                             mf->get_addr(), status);
+                            fflush(stdout);
 
         if (status == HIT) {
           if (!write_sent) {

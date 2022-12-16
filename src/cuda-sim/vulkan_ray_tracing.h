@@ -192,7 +192,7 @@ typedef struct vertex_metadata
     // assuming all data are 4-Byte
     // *device* vertex buffer
     std::vector<std::unordered_map<uint32_t, uint32_t>> vertex_map;
-    std::vector<float> vb;
+    std::vector<unsigned> vb;
     uint32_t* vertex_addr[MAX_VERTEX] = {NULL};
     // vertex buffer size
     uint32_t vertex_size[MAX_VERTEX] = {0};
@@ -325,7 +325,8 @@ public:
 
     static void dump_descriptor_set(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type);
     static void dump_descriptor_set_for_AS(uint32_t setID, uint32_t descID, void *address, uint32_t desc_size, VkDescriptorType type, uint32_t backwards_range, uint32_t forward_range, bool split_files, VkAccelerationStructureKHR _topLevelAS);
-    static void dump_descriptor_sets(struct anv_descriptor_set *set);
+    static void dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture);
+    static void dump_texture(struct anv_descriptor_set *set);
     static void dump_AS(struct anv_descriptor_set *set, VkAccelerationStructureKHR _topLevelAS);
     static void dump_callparams_and_sbt(void *raygen_sbt, void *miss_sbt, void *hit_sbt, void *callable_sbt, bool is_indirect, uint32_t launch_width, uint32_t launch_height, uint32_t launch_depth, uint32_t launch_size_addr);
     static void dumpVertex(struct anv_buffer *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID);
