@@ -184,6 +184,7 @@ typedef struct texture_metadata
     uint32_t isl_tiling_mode;
     uint32_t row_pitch_B;
     VkFilter filter;
+    uint32_t mip_level;
 } texture_metadata;
 
 #define MAX_VERTEX 28
@@ -207,6 +208,7 @@ typedef struct vertex_metadata
     uint32_t vertex_out_stride[MAX_VERTEX] = {0};
 
     struct anv_buffer* index_buffer = NULL;
+    VkIndexType index_type = VK_INDEX_TYPE_MAX_ENUM;
     std::vector<std::vector<unsigned>> index_to_draw;
     unsigned width = -1;
     unsigned height = -1;
@@ -225,7 +227,14 @@ typedef struct FBO {
   unsigned y = -1;
   std::vector<unsigned> thread_info_pixel;
   std::vector<unsigned> thread_info_vertex;
+  std::vector<float> thread_info_lod;
 } FBO;
+
+enum VULKAN_APPS {
+    RENDER_PASSES = 0,
+    INSTANCING, 
+    VULKAN_APPS_MAX
+};
 
 struct anv_descriptor_set;
 struct anv_descriptor;
@@ -243,6 +252,8 @@ private:
     static struct anv_descriptor_set *descriptorSet;
     static struct vertex_metadata *VertexMeta;
     static struct FBO *FBO;
+    static unsigned texture_width;
+    static unsigned texture_height;
 
     // For Launcher
     static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
@@ -264,6 +275,8 @@ private:
 
 
 public:
+    static VULKAN_APPS app_id;
+    static unsigned draw;
     static bool is_FS;
     static unsigned thread_count;
     static void traceRay( // called by raygen shader
@@ -294,12 +307,14 @@ public:
     static void VulkanRayTracing::vkCmdDraw(
         struct anv_vertex_binding *vbuffer,
         struct anv_graphics_pipeline *pipeline,
-        struct VkViewport *viewports);
+        struct VkViewport *viewports, unsigned instanceCount);
     static void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned size);
-    static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr);
+    static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr, VkIndexType type);
     static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t tid);
     static uint64_t getVertexOutAddr(uint32_t buffer_index, uint32_t tid);
     static uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset);
+    static float VulkanRayTracing::getTexLOD(unsigned thread_id);
+
     static void vkCmdTraceRaysKHR( // called by vulkan application
                       void *raygen_sbt,
                       void *miss_sbt,
@@ -360,7 +375,8 @@ public:
                                        VkImageTiling tiling,
                                        uint32_t isl_tiling_mode,
                                        uint32_t row_pitch_B,
-                                       uint32_t filter);
+                                       uint32_t filter, 
+                                       uint32_t mip_level);
     static void pass_child_addr(void *address);
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);

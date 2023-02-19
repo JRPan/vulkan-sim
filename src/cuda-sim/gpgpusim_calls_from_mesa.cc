@@ -75,14 +75,14 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
 
 extern "C" void gpgpusim_vkCmdDraw(struct anv_vertex_binding *vbuffer,
                                    struct anv_graphics_pipeline *pipeline,
-                                   struct VkViewport *viewports) {
+                                   struct VkViewport *viewports, unsigned instanceCount) {
   VulkanRayTracing::invoke_gpgpusim();
-  VulkanRayTracing::vkCmdDraw(vbuffer, pipeline, viewports);
+  VulkanRayTracing::vkCmdDraw(vbuffer, pipeline, viewports, instanceCount);
   // VulkanRayTracing::vkCmdDraw(void *vertex_buffer);
 }
 
-extern "C" void gpgpusim_saveIndexBuffer(struct anv_buffer *ptr) {
-    VulkanRayTracing::saveIndexBuffer(ptr);
+extern "C" void gpgpusim_saveIndexBuffer(struct anv_buffer *ptr, VkIndexType type) {
+    VulkanRayTracing::saveIndexBuffer(ptr, type);
 }
 
 extern "C" void gpgpusim_setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type)
@@ -167,9 +167,10 @@ extern void gpgpusim_setTextureFromLauncher_cpp(void *address,
                                                 VkImageTiling tiling,
                                                 uint32_t isl_tiling_mode,
                                                 uint32_t row_pitch_B,
-                                                uint32_t filter)
+                                                uint32_t filter, 
+                                                uint32_t mip_level)
 {
-    VulkanRayTracing::setTextureFromLauncher(address, deviceAddress, setID, descID, size,width, height, format, VkDescriptorTypeNum, n_planes, n_samples, tiling, isl_tiling_mode, row_pitch_B, filter);
+    VulkanRayTracing::setTextureFromLauncher(address, deviceAddress, setID, descID, size,width, height, format, VkDescriptorTypeNum, n_planes, n_samples, tiling, isl_tiling_mode, row_pitch_B, filter, mip_level);
 }
 
 extern "C" void gpgpusim_pass_child_addr(void *address)

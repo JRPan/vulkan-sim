@@ -6136,7 +6136,9 @@ void tex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   // const operand_info &src8 = pI->operand_lookup(8);
   // src8_data = thread->get_operand_value(src8, src8, F32_TYPE, thread, 1);
-  float lod = 0;
+
+  unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
+  float lod = VulkanRayTracing::getTexLOD(thread_id);
 
   float c0, c1, c2, c3;
 

@@ -86,7 +86,7 @@ float linearRGB_to_SRGB(float s)
         return 1.055 * pow(s, 1 / 2.4) - 0.055;
 }
 
-Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, uint32_t level, ImageMemoryTransactionRecord& transaction, uint64_t launcher_offset = 0)
+Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, uint32_t level, uint32_t lod, ImageMemoryTransactionRecord& transaction, uint64_t launcher_offset = 0)
 {
     uint8_t *address;
     uint8_t *deviceAddress;
@@ -146,6 +146,33 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
     assert(0 <= x && x < width);
     assert(0 <= y && y < height);
 
+    unsigned original_x = x;
+    unsigned original_y = y;
+    y = 0;
+    unsigned max_lod = log2(width) - log2(16);
+
+    x = original_x / (pow(2, lod));
+    if (lod > 1) {
+        x += width / 2;
+    }
+
+    if (lod > 0) {
+        for (unsigned i = 0; i < lod; i++) {
+          if (i == 1) {
+            continue;
+          }
+          y += height / pow(2, i);
+        }
+    }
+    y = y + original_y / (pow(2, lod));
+
+    // if (lod > max_lod) {
+    //     x += 64;
+    //     y = y - 32 - 64;
+    // }
+    assert(x < width);
+    assert(y < height + height / 2);
+
     //uint8_t* address = anv_address_map(image->planes[0].address);
 
     switch(vk_format)
@@ -179,9 +206,12 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             }
 
             uint8_t dst_colors[256];
+            if (lod > max_lod) {
+                return Pixel(0, 0, 255, 255);
+            }
             if(!basisu::astc::decompress(dst_colors, address + offset, true, 8, 8))
             {
-                printf("decoding error at pixel (%d, %d)\n", x, y);
+                printf("decoding error at pixel (%d, %d), lod is %u\n", x, y, lod);
                 exit(-2);
             }
             uint8_t* pixel_color = &dst_colors[0] + ((x % 8) + (y % 8) * 8) * 4;
@@ -202,7 +232,8 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             int tileY = y / tileHeight;
             int tileID = tileX + tileY * width / tileWidth;
 
-            if (use_external_launcher)
+            if (true)
+            // if (use_external_launcher)
             {
                 transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 4;
                 transaction.size = 4;
@@ -267,7 +298,7 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
     }
 }
 
-Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampler *sampler, float x, float y, float level, std::vector<ImageMemoryTransactionRecord>& transactions, uint64_t launcher_offset = 0)
+Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampler *sampler, float x, float y, float level, float lod,  std::vector<ImageMemoryTransactionRecord>& transactions, uint64_t launcher_offset = 0)
 {
     uint32_t width;
     uint32_t height;
@@ -323,7 +354,7 @@ Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampl
             assert(0 <= y_int && y_int < height);
 
             ImageMemoryTransactionRecord transaction;
-            Pixel pixel = load_image_pixel(image, x_int, y_int, (uint32_t)level,
+            Pixel pixel = load_image_pixel(image, x_int, y_int, (uint32_t)level, lod, 
                                            transaction, launcher_offset);
             transactions.push_back(transaction);
             TXL_DPRINTF("Adding (nearest) txl transaction: 0x%x\n", transaction.address);
@@ -368,7 +399,7 @@ Pixel get_interpolated_pixel(struct anv_image_view *image_view, struct anv_sampl
                         yc += height;
                     
                     ImageMemoryTransactionRecord transaction;
-                    pixel[i][j] = load_image_pixel(image, xc, yc, 0, transaction);
+                    pixel[i][j] = load_image_pixel(image, xc, yc, 0, 1, transaction);
 
                     for(int i = 0; i < transactions.size(); i++)
                         if(transactions[i].address == transaction.address && transactions[i].size == transaction.size)

@@ -626,7 +626,8 @@ class simt_stack {
 // Let's just upgrade to C++11 so we can use constexpr here...
 // start allocating from this address (lower values used for allocating globals
 // in .ptx file)
-const unsigned long long GLOBAL_HEAP_START = 0xC0000000;
+// const unsigned long long GLOBAL_HEAP_START = 0xC0000000;
+const unsigned long long GLOBAL_HEAP_START = 0x30000000;
 // Volta max shmem size is 96kB
 const unsigned long long SHARED_MEM_SIZE_MAX = 96 * (1 << 10);
 // Volta max local mem is 16kB
