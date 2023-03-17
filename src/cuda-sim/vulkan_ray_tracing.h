@@ -233,6 +233,7 @@ typedef struct FBO {
 enum VULKAN_APPS {
     RENDER_PASSES = 0,
     INSTANCING, 
+    PBRBASIC,
     VULKAN_APPS_MAX
 };
 
