@@ -1300,8 +1300,8 @@ const bool writeImageBinary = true;
 // unsigned draw = 0;
 #define SKIP_VS false
 #define SKIP_FS false
-unsigned DRAW_START = 0;
-unsigned DRAW_END = 23;
+unsigned DRAW_START = 1;
+unsigned DRAW_END = 1;
 
 
 // workloads: 
@@ -1341,12 +1341,18 @@ unsigned out_pos_index = -1;
 unsigned tex_index = -1;
 
 
-void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
-                                 struct anv_graphics_pipeline *pipeline, 
-                                 VkViewport *viewports, unsigned instanceCount) {
+void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned instanceCount) {
   // assume only vertex and frag. No geometry or tessellation
   unsigned vertex_id = -1;
   unsigned frag_id = -1;
+  struct anv_vertex_binding *vbuffer = cmd_buffer->state.vertex_bindings;
+  struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
+  VkViewport *viewports = cmd_buffer->state.gfx.dynamic.viewport.viewports;
+  VertexMeta->push_constants = (float*) &cmd_buffer->state.gfx.base.push_constants.client_data;
+
+
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
 
   char const *app_env = std::getenv("VULKAN_APP");
   if (app_env == NULL) {
@@ -1372,9 +1378,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   } else if (vulkan_app.find("instancing") != std::string::npos) {
     VulkanRayTracing::app_id = INSTANCING;
 
-    attrib_stride = new unsigned[4]{0,12,24,32};
+    attrib_stride = new unsigned[7]{0,12,24,0,12,24,28};
     out_attrib_count = 6;
-    out_attrib_size = new unsigned[6]{12,12,8,12,12,16};
+    out_attrib_size = new unsigned[6]{12,12,12,12,12,16};
     out_pos_index = 5;
     tex_index = 2;
     if (draw == 0) {
@@ -1387,13 +1393,31 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
 
   } else if (vulkan_app.find("pbrbasic") != std::string::npos) {
     VulkanRayTracing::app_id = PBRBASIC;
+    attrib_stride = new unsigned[2]{0,12};
+    out_attrib_count = 3;
+    out_attrib_size = new unsigned[out_attrib_count]{12,12,16};
+    out_pos_index = 2;
+    tex_index = -1;
+
+    vertex_id = 2;
+    frag_id = 3;
+  } else if (vulkan_app.find("pbrtexture") != std::string::npos) {
+    VulkanRayTracing::app_id = PBRTEXTURE;
+    attrib_stride = new unsigned[4]{0,12,24,80};
+    out_attrib_count = 5;
+    out_attrib_size = new unsigned[out_attrib_count]{12,12,8,16,16};
+    out_pos_index = 4;
+    tex_index = 2;
+
+    vertex_id = 10;
+    frag_id = 11;
   } else {
     printf("unknown app\n");
     assert(0 && "unknown app");
   }
 
-  gpgpu_context *ctx = GPGPU_Context();
-  CUctx_st *context = GPGPUSim_Context(ctx);
+  if (viewports[0].width != 1280) return;
+
   if (draw < DRAW_START) {
     draw++;
     return;
@@ -1411,6 +1435,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     printf("render resolution: %u x %u\n", (unsigned) viewports[0].width,(unsigned) viewports[0].height);
     FBO->width = viewports[0].width;
     FBO->height = viewports[0].height;
+    FBO->width = 2560;
+    FBO->height = 1440;
+    // FBO->width = 3840;
+    // FBO->height = 2160;
     FBO->x = viewports[0].x;
     FBO->y = viewports[0].y;
     FBO->fbo_size = 4 * FBO->width * FBO->height * sizeof(float);
@@ -1483,8 +1511,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   dump_descriptor_sets(VulkanRayTracing::descriptorSet, false);
   
   if (app_id == INSTANCING && draw == 1) {
-    // instanceCount = 1000;
-    instanceCount = 100;
+    instanceCount = 2048;
   }
   thread_count = VertexMeta->vb.size() * instanceCount;
 
@@ -1498,6 +1525,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
             VertexMeta->vertex_out_size[i]);
   }
 
+  if (app_id == PBRBASIC) {
+    VertexMeta->constants_dev_addr =
+        context->get_device()->get_gpgpu()->gpu_malloc(1024);
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(VertexMeta->constants_dev_addr, VertexMeta->push_constants, 1024);
+    print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 1024, 0);
+  }
   if (!SKIP_VS) {
     // run vertex shader
     run_shader(vertex_id,thread_count);
@@ -1563,6 +1596,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     float screen_x = (ndc_x + 1) * (FBO->width / 2) + FBO->x;
     float screen_y = (ndc_y + 1) * (FBO->height / 2) + FBO->y;
     float screen_z = 0.0f + ndc_z * (1.0f - 0.0f);
+    if (app_id == PBRBASIC) {
+      screen_z = 1.0f - screen_z;
+    }
     view.push_back(screen_x);
     view.push_back(screen_y);
     view.push_back(screen_z);
@@ -1576,10 +1612,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     raw.push_back(VertexMeta->vertex_out[out_pos_index][i+3]);
     vertex_raw.push_back(raw);
   }
-#if WORKLOAD != 2
   assert(vertex_screen.size() == thread_count);
   assert(vertex_ndc.size() == thread_count);
-#endif
 
 
   // Assemble into triangles using index buffer
@@ -1803,6 +1837,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
   assert(pixel_index.size() == FBO->thread_info_pixel.size());
   for (unsigned i = 0; i < FBO->thread_info_pixel.size(); i ++) {
+    
     // calcualte LOD of each pixel
     unsigned pixel = FBO->thread_info_pixel[i];
     unsigned x = pixel % FBO->width;
@@ -1851,6 +1886,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
     lod = std::max(lod, (float)0);
     assert(!isnan(lod));
     FBO->thread_info_lod.push_back(lod);
+    
+    // FBO->thread_info_lod.push_back(0);
   }
 
 //   for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
@@ -1875,6 +1912,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_vertex_binding *vbuffer,
   }
 
   dump_texture(VulkanRayTracing::descriptorSet);
+  // set push constants
+  if (app_id == PBRBASIC) {
+    print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 1024, 0);
+  }
   
 
   // pixel shaders
@@ -1968,27 +2009,22 @@ uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
                                          uint32_t tid) {
   // instancing (multiple vertex attributes in one vertex buffer)
   if (app_id == INSTANCING && draw == 1) {
-    if (buffer_index < 4) {
+    float *base = 0x0;
+    if (buffer_index < 3) {
       unsigned real_id = tid % VertexMeta->vb.size();
-      float *base = (float *)VertexMeta->vertex_addr[0] +
-                    VertexMeta->vb[real_id] * VertexMeta->vertex_stride[0] / 4;
-      if (tid >= thread_count) {
-      return 0;
-      }
-      return base + (attrib_stride[buffer_index] / 4);
+      base = (float *)VertexMeta->vertex_addr[0] +
+             VertexMeta->vb[real_id] * VertexMeta->vertex_stride[0] / 4;
     } else {
-      unsigned tmp_stride[] = {0, 12, 24, 28};
-      buffer_index = buffer_index - 4;
-      unsigned real_id = tid / VertexMeta->vb.size();
-      float *base =
-          (float *)VertexMeta->vertex_addr[1] +
-          VertexMeta->vb[real_id] * VertexMeta->vertex_stride[1] / 4;
-      if (tid >= thread_count) {
-      return 0;
-      }
-      return base + (tmp_stride[buffer_index] / 4);
+      unsigned instance = tid / VertexMeta->vb.size();
+      base = (float *)VertexMeta->vertex_addr[1] +
+             instance * VertexMeta->vertex_stride[1] / 4;
     }
-  } else if (app_id == INSTANCING && draw == 0) {
+    if (tid >= thread_count) {
+      return 0;
+    }
+    return base + (attrib_stride[buffer_index] / 4);
+  } else if (app_id == INSTANCING && draw == 0 || app_id == PBRBASIC ||
+             app_id == PBRTEXTURE) {
     unsigned offset = VertexMeta->vb[tid] * VertexMeta->vertex_stride[0] / 4;
     if (tid >= VulkanRayTracing::thread_count) {
       return 0;
@@ -2008,6 +2044,8 @@ uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
     }
     assert(offset < VertexMeta->vertex_count[buffer_index]);
     return VertexMeta->vertex_addr[buffer_index] + offset;
+  } else {
+    assert(0);
   }
 }
 
@@ -2031,8 +2069,11 @@ uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
   return FBO->fbo_dev + FBO->thread_info_pixel[offset] * 4;
 }
 
+uint64_t VulkanRayTracing::getConst() {
+    return VertexMeta->constants_dev_addr;
+}
+
 float VulkanRayTracing::getTexLOD(unsigned thread_id) {
-    assert(FBO->thread_info_lod[thread_id] < 11.0f);
     return FBO->thread_info_lod[thread_id];
 }
 
@@ -2691,6 +2732,7 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     VertexMeta->vertex_addr[setID] = devPtr;
     VertexMeta->vertex_size[setID] = size;
     VertexMeta->vertex_count[setID] = size / 4;
+    // TODO: multiple by CTA size here. Should printer byte / CTA
     print_memcpy("MemcpyVulkan",devPtr, VertexMeta->vertex_size[setID], stride);
     // context->get_device()->get_gpgpu()->gtrace
     //     << "MemcpyHtoD," << std::hex << devPtr << "," << std::dec
@@ -3058,9 +3100,47 @@ void VulkanRayTracing::dump_descriptor_set(uint32_t setID, uint32_t descID, void
 
 void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set) {
   for (int i = 0; i < set->descriptor_count; i++) {
-    if (i == 2) {
-      i = 4;
+      if (VulkanRayTracing::app_id == RENDER_PASSES ||
+          VulkanRayTracing::app_id == INSTANCING) {
+          if (i == 2) {
+              i = 4;
+          }
+      }
+      struct anv_descriptor_set *set = VulkanRayTracing::descriptorSet;
+
+      const struct anv_descriptor_set_binding_layout *bind_layout =
+          &set->layout->binding[i];
+      struct anv_descriptor *desc =
+          &set->descriptors[bind_layout->descriptor_index];
+      void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+
+      assert(desc->type == bind_layout->type);
+
+      switch (desc->type) {
+          case VK_DESCRIPTOR_TYPE_SAMPLER:
+          case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
+              dumpTextures(desc, 0, i, i, desc->type);
+              break;
+          }
+      }
+  }
+}
+void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture)
+{
+  for (int i = 0; i < set->descriptor_count; i++) {
+    if (VulkanRayTracing::app_id == RENDER_PASSES ||
+        VulkanRayTracing::app_id == INSTANCING) {
+      if (i == 2) {
+        i = 4;
+        // for some reason raytracing_extended skipped binding = 3
+        // and somehow they have 34 descriptor sets but only 10 are used
+        // so we just skip those
+        // continue;
+      }
     }
+
     struct anv_descriptor_set *set = VulkanRayTracing::descriptorSet;
 
     const struct anv_descriptor_set_binding_layout *bind_layout =
@@ -3072,53 +3152,17 @@ void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set) {
     assert(desc->type == bind_layout->type);
 
     switch (desc->type) {
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+        // return (void *)(desc);
+        dumpStorageImage(desc, 0, i, desc->type);
+        break;
+      }
       case VK_DESCRIPTOR_TYPE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
       case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
-        dumpTextures(desc, 0, i, i, desc->type);
-        break;
-      }
-    }
-  }
-}
-void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture)
-{
-   for(int i = 0; i < set->descriptor_count; i++)
-   {
-       if(i == 2)
-       {    
-            i = 4;
-            // for some reason raytracing_extended skipped binding = 3
-            // and somehow they have 34 descriptor sets but only 10 are used
-            // so we just skip those
-            // continue;
-       }
-
-        struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
-
-        const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[i];
-        struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
-        void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
-
-        assert(desc->type == bind_layout->type);
-
-        switch (desc->type)
-        {
-            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-            {
-                //return (void *)(desc);
-                dumpStorageImage(desc, 0, i, desc->type);
-                break;
-            }
-            case VK_DESCRIPTOR_TYPE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-            {
-                //return desc;
-                if (dump_texture)
-                {
+        // return desc;
+        if (dump_texture) {
                     dumpTextures(desc, 0, i, i, desc->type);
                 } else {
                     anv_descriptor *desc_offset = ((anv_descriptor *)((
@@ -3175,7 +3219,7 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool
                 assert(0);
                 break;
         }
-   }
+  }
 }
 
 void VulkanRayTracing::dump_AS(struct anv_descriptor_set *set, VkAccelerationStructureKHR _topLevelAS)
