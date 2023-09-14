@@ -419,36 +419,36 @@ void function_info::create_basic_blocks() {
 
 void function_info::print_basic_blocks() {
   printf("Printing basic blocks for function \'%s\':\n", m_name.c_str());
-  std::list<ptx_instruction *>::iterator ptx_itr;
-  unsigned last_bb = 0;
-  for (ptx_itr = m_instructions.begin(); ptx_itr != m_instructions.end();
-       ptx_itr++) {
-    if ((*ptx_itr)->get_bb()) {
-      if ((*ptx_itr)->get_bb()->bb_id != last_bb) {
-        printf("\n");
-        last_bb = (*ptx_itr)->get_bb()->bb_id;
-      }
-      printf("bb_%02u\t: ", (*ptx_itr)->get_bb()->bb_id);
-      (*ptx_itr)->print_insn();
-      printf("\n");
-    }
-  }
-  printf("\nSummary of basic blocks for \'%s\':\n", m_name.c_str());
-  std::vector<basic_block_t *>::iterator bb_itr;
-  for (bb_itr = m_basic_blocks.begin(); bb_itr != m_basic_blocks.end();
-       bb_itr++) {
-    printf("bb_%02u\t:", (*bb_itr)->bb_id);
-    if ((*bb_itr)->ptx_begin)
-      printf(" first: %s\t", ((*bb_itr)->ptx_begin)->get_opcode_cstr());
-    else
-      printf(" first: NULL\t");
-    if ((*bb_itr)->ptx_end) {
-      printf(" last: %s\t", ((*bb_itr)->ptx_end)->get_opcode_cstr());
-    } else
-      printf(" last: NULL\t");
-    printf("\n");
-  }
-  printf("\n");
+  // std::list<ptx_instruction *>::iterator ptx_itr;
+  // unsigned last_bb = 0;
+  // for (ptx_itr = m_instructions.begin(); ptx_itr != m_instructions.end();
+  //      ptx_itr++) {
+  //   if ((*ptx_itr)->get_bb()) {
+  //     if ((*ptx_itr)->get_bb()->bb_id != last_bb) {
+  //       printf("\n");
+  //       last_bb = (*ptx_itr)->get_bb()->bb_id;
+  //     }
+  //     printf("bb_%02u\t: ", (*ptx_itr)->get_bb()->bb_id);
+  //     (*ptx_itr)->print_insn();
+  //     printf("\n");
+  //   }
+  // }
+  // printf("\nSummary of basic blocks for \'%s\':\n", m_name.c_str());
+  // std::vector<basic_block_t *>::iterator bb_itr;
+  // for (bb_itr = m_basic_blocks.begin(); bb_itr != m_basic_blocks.end();
+  //      bb_itr++) {
+  //   printf("bb_%02u\t:", (*bb_itr)->bb_id);
+  //   if ((*bb_itr)->ptx_begin)
+  //     printf(" first: %s\t", ((*bb_itr)->ptx_begin)->get_opcode_cstr());
+  //   else
+  //     printf(" first: NULL\t");
+  //   if ((*bb_itr)->ptx_end) {
+  //     printf(" last: %s\t", ((*bb_itr)->ptx_end)->get_opcode_cstr());
+  //   } else
+  //     printf(" last: NULL\t");
+  //   printf("\n");
+  // }
+  // printf("\n");
 }
 
 void function_info::print_basic_block_links() {

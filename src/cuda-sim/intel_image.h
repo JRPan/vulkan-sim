@@ -289,6 +289,126 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             pixel.a = colors[3] / 255.0;
             return pixel;
         }
+        case VK_FORMAT_R8_UNORM:
+        {
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+
+            // if (use_external_launcher)
+            if (true)
+            {
+                transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 1;
+                transaction.size = 1;
+            }
+
+            uint8_t colors[4];
+
+            // intel_tiled_to_linear(x * 1, x * 1 + 1, y, y + 1,
+            //     colors, address, width * 1 ,row_pitch_B, false,
+            //     ISL_TILING_Y0, ISL_MEMCPY);
+
+            Pixel pixel;
+            // pixel.r = colors[0] / 255.0;
+            // pixel.g = colors[1] / 255.0;
+            // pixel.b = colors[2] / 255.0;
+            // pixel.a = colors[3] / 255.0;
+            pixel.r = 0.f;
+            pixel.g = 0.f;
+            pixel.b = 0.f;
+            pixel.a = 0.f;
+            return pixel;
+        }
+        case VK_FORMAT_R16G16_SFLOAT:
+        {
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+
+            // if (use_external_launcher)
+            if (true)
+            {
+                transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 4;
+                transaction.size = 4;
+            }
+
+            uint8_t colors[4];
+
+            // intel_tiled_to_linear(x * 4, x * 4 + 4, y, y + 1,
+            //     colors, address, width * 4 ,row_pitch_B, false,
+            //     ISL_TILING_Y0, ISL_MEMCPY);
+
+            Pixel pixel;
+            pixel.r = 0.f;
+            pixel.g = 0.f;
+            pixel.b = 0.f;
+            pixel.a = 0.f;
+            return pixel;
+        }
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        {
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+
+            // if (use_external_launcher)
+            if (true)
+            {
+                transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 8;
+                transaction.size = 8;
+            }
+
+            uint8_t colors[4];
+
+            // intel_tiled_to_linear(x * 8, x * 8 + 8, y, y + 1,
+            //     colors, address, width * 8 ,row_pitch_B, false,
+            //     ISL_TILING_Y0, ISL_MEMCPY);
+
+            Pixel pixel;
+            pixel.r = 0.f;
+            pixel.g = 0.f;
+            pixel.b = 0.f;
+            pixel.a = 0.f;
+            return pixel;
+        }
+        case VK_FORMAT_R32G32B32A32_SFLOAT:
+        {
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+
+            // if (use_external_launcher)
+            if (true)
+            {
+                transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 16;
+                transaction.size = 16;
+            }
+
+            float colors[4];
+
+            // intel_tiled_to_linear(x * 16, x * 16 + 16, y, y + 1,
+            //     (char *) colors, address, width * 16 ,row_pitch_B, false,
+            //     ISL_TILING_Y0, ISL_MEMCPY);
+
+            Pixel pixel;
+            // pixel.r = colors[0];
+            // pixel.g = colors[1];
+            // pixel.b = colors[2];
+            // pixel.a = colors[3];
+            pixel.r = 0.f;
+            pixel.g = 0.f;
+            pixel.b = 0.f;
+            pixel.a = 0.f;
+            return pixel;
+        }
         default:
         {
             printf("%d not implemented\n", vk_format);

@@ -81,10 +81,10 @@ for l in lines:
 
 unknown_symbols = list(set(unknown_symbols)) # removes duplicates
 
-#print("Parsed unknown symbols and ops.")
-#print(unknown_symbols)
-#print(unknown_op_name)
-#print(unknown_op_line)
+# print("Parsed unknown symbols and ops.")
+# print(unknown_symbols)
+# print(unknown_op_name)
+# print(unknown_op_line)
 
 
 
@@ -144,6 +144,8 @@ for l in f.readlines():
                 # Convert unknown op to convert chain
                 # Printing Instruction
                 if (operands[i+1] == '0F000000ff'):
+                    continue
+                if 'rt_alloc_mem' in l:
                     continue
                 if((symbol_table[operands[i]][2:] != symbol_table[operands[i+1]][2:])): # When bit sizes dont match
                     #print(symbol_table[operands[i]][2:])

@@ -1836,6 +1836,11 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   // initialize the SIMT stacks and fetch hardware
   init_warps(free_cta_hw_id, start_thread, end_thread, ctaid, cta_size, kernel);
   m_n_active_cta++;
+  if (ctaid % 100 == 0) {
+    float percent_done = 100.f * ctaid / kernel.num_blocks();
+    printf("Issuing block %u / %u, at %.1f\%\n", ctaid,
+           kernel.num_blocks(), percent_done);
+  }
 
   shader_CTA_count_log(m_sid, 1);
   SHADER_DPRINTF(LIVENESS,

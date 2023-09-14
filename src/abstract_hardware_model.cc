@@ -3044,7 +3044,7 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   std::stringstream addr_str;
   addr_str << std::hex;
   int mem_count;
-  bool has_invalid_addr = false;
+  bool has_invalid_addr = true;
   
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
@@ -3057,6 +3057,13 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       // virtual function
       checkExecutionStatusAndUpdate(inst, t, tid);
     }
+  }
+  if (pI->get_opcode() == LOAD_FIRST_VERTEX_OP ||
+        pI->get_opcode() == LOAD_VERTEX_ID_ZERO_BASE_OP ||
+        pI->get_opcode() == LOAD_BASE_INSTANCE_OP ||
+        pI->get_opcode() == LOAD_INSTANCE_ID_OP ||
+        pI->get_opcode() == LOAD_FRAG_COORD_OP) {
+      inst.space.set_type(global_space);
   }
   // print out ptx traces
   assert(pI);
@@ -3115,6 +3122,9 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
         case LT_OPTION:
           sass << ".LT.AND";
           break;
+        case GE_OPTION:
+          sass << ".GE.AND";
+          break;
         default:
           assert(0);
       }
@@ -3144,11 +3154,12 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       }
       break;
     }
-    case ADD_OP: {
+    case ADD_OP:
+    case SUB_OP: {
       unsigned i_type = pI->get_type();
       if (i_type == F32_TYPE) {
         sass << "FADD";
-      } else if (i_type == U64_TYPE || i_type == U32_TYPE) {
+      } else if (i_type == U64_TYPE || i_type == U32_TYPE || i_type == S32_TYPE) {
         sass << "IADD";
       }
       else {
@@ -3160,10 +3171,12 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       sass << "MOV";
       break;
     }
+    case TXL_OP:
     case TEX_OP: {
       sass << "TEX";
       break;
     }
+    
     case RCP_OP: {
       sass << "MUFU.RCP";
       break;
@@ -3221,11 +3234,23 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       sass << "BRA";
       break;
     }
-      
+    case ABS_OP: {
+      unsigned i_type = pI->get_type();
+      if (i_type == F32_TYPE) {
+        sass << "MUFU";
+      } else if (i_type == S32_TYPE) {
+        sass << "IABS";
+      } else {
+        assert(0);
+      }
+      break;
+    }
+
     default:
       // implement this
-      printf("ERROR: opcode not implemented\n");
-      assert(0);
+      // printf("ERROR: opcode not implemented\n");
+      // assert(0);
+      break;
   }
   sass << " ";
 
@@ -3235,6 +3260,23 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
     sass << "R" << inst.in[i] << " ";
   }
   // mem
+  // std::string identifier = pI->src3().get_symbol()->name();
+  // std::vector<std::string> v;
+  // std::stringstream ss(identifier);
+
+  // std::string attrib_name = "UNDEFINED";
+
+  // while (ss.good()) {
+  //   std::string substr;
+  //   getline(ss, substr, '_');
+  //   v.push_back(substr);
+  // }
+
+  // if (v.size() == 4) {
+  //   attrib_name = v[0] + '_' + v[1] + '_' + v[2];
+  //   assert(m_gpu->identifier_addr.find(attrib_name) !=
+  //          m_gpu->identifier_addr.end());
+  // }
   switch (pI->get_opcode()) {
     case LD_OP:
     case ST_OP:
@@ -3242,16 +3284,16 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
         if (inst.active(t)) {
           unsigned tid = m_warp_size * warpId + t;
           addr_str << "0x" << m_thread[tid]->last_eaddr() << " ";
-          if (m_gpu->ignore_addr.find(m_thread[tid]->last_eaddr()) !=
-              m_gpu->ignore_addr.end()) {
-            has_invalid_addr = true;
-          }
+          // if (m_gpu->identifier_addr.at(attrib_name) == identifier) {
+          //   has_invalid_addr = false;
+          // }
         }
       }
       // 4 byte/thread, no compression
       sass << "4 0 " << addr_str.str();
       break;
     case TEX_OP:
+    case TXL_OP:
       // tex has muptiple mem addr
       for (int i = 0; i < mem_count; i++) {
         std::stringstream tex_addr;
@@ -3268,12 +3310,32 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
         m_gpu->gtrace << pc_string.str() << " " << active_string.str() << " ";
         m_gpu->gtrace << "1 " << "R" << inst.in[i] << " ";
         m_gpu->gtrace << "TEX" << " ";
-        m_gpu->gtrace << inst.incount << " ";
-        for (int i = 0; i < inst.incount; i++) {
-          m_gpu->gtrace << "R" << inst.in[i] << " ";
+        // can remove the else branch actually. But I'm lazy
+        if (inst.incount > 4) {
+          unsigned in = inst.incount;
+          std::unordered_map<unsigned, unsigned> map;
+          unsigned in_reg[4];
+          for (unsigned i = 0; i < in; i++) {
+            if (map.find(inst.in[i]) == map.end()) {
+              in_reg[map.size()] = inst.in[i];
+              map[inst.in[i]] = -1;
+            }
+          }
+          // print all in_reg
+          m_gpu->gtrace << map.size() << " ";
+          for (int i = 0; i < map.size(); i++) {
+            m_gpu->gtrace << "R" << in_reg[i] << " ";
+          }
+          m_gpu->gtrace << "4 0 " << tex_addr.str();
+          m_gpu->gtrace << std::endl;
+        } else {
+          m_gpu->gtrace << inst.incount << " ";
+          for (int i = 0; i < inst.incount; i++) {
+            m_gpu->gtrace << "R" << inst.in[i] << " ";
+          }
+          m_gpu->gtrace << "4 0 " << tex_addr.str();
+          m_gpu->gtrace << std::endl;
         }
-        m_gpu->gtrace << "4 0 " << tex_addr.str();
-        m_gpu->gtrace << std::endl;
       }
       break;
     default:
@@ -3292,7 +3354,7 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
         return;
       }
   }
-  if (pI->get_opcode() != TEX_OP) {
+  if (pI->get_opcode() != TEX_OP && pI->get_opcode() != TXL_OP) {
     // TEX has multiple addrs. handled seperately
     m_gpu->gtrace << sass.str();
     m_gpu->gtrace << std::endl;

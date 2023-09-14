@@ -161,6 +161,7 @@ enum operand_type {
   v_double_op_t,
   v_int_t,
   v_unsigned_t,
+  s_identifier_t,
   undef_t
 };
 

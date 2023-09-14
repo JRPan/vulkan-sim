@@ -49,7 +49,7 @@
 #define MIN_MAX(a,b,c) MAX(MIN((a), (b)), (c))
 #define MAX_MIN(a,b,c) MIN(MAX((a), (b)), (c))
 
-#define MAX_DESCRIPTOR_SETS 1
+#define MAX_DESCRIPTOR_SETS 4
 #define MAX_DESCRIPTOR_SET_BINDINGS 32
 
 // enum class TransactionType {
@@ -188,30 +188,82 @@ typedef struct texture_metadata
 } texture_metadata;
 
 #define MAX_VERTEX 28
+typedef struct VertexAttrib {
+    std::vector<unsigned> location;
+    std::vector<unsigned> binding;
+    std::vector<unsigned> offset;
+    std::vector<VkVertexInputRate> rate;
+} VertexAttrib;
+
+typedef struct desc_ptr {
+    void *addr;
+    uint32_t size;
+    bool is_texture;
+
+    desc_ptr() {
+        addr = NULL;
+        size = 0;
+        is_texture = false;
+    }
+} desc_ptr;
+
 typedef struct vertex_metadata
 {
     // assuming all data are 4-Byte
     // *device* vertex buffer
     std::vector<std::unordered_map<uint32_t, uint32_t>> vertex_map;
     std::vector<unsigned> vb;
+    struct anv_buffer *vertex_buffers[MAX_VERTEX] = {NULL};
     uint32_t* vertex_addr[MAX_VERTEX] = {NULL};
     // vertex buffer size
     uint32_t vertex_size[MAX_VERTEX] = {0};
     uint32_t vertex_count[MAX_VERTEX] = {0};
     uint32_t vertex_stride[MAX_VERTEX] = {0};
     // vertex shader out data
-    float* vertex_out[MAX_VERTEX]  = {NULL};
+    // float* vertex_out[MAX_VERTEX]  = {NULL};
     // *device* addr of vertex shader output
-    uint32_t* vertex_out_devptr[MAX_VERTEX] = {NULL};
-    uint32_t vertex_out_size[MAX_VERTEX] = {0};
-    uint32_t vertex_out_count[MAX_VERTEX] = {0};
-    uint32_t vertex_out_stride[MAX_VERTEX] = {0};
+    // uint32_t* vertex_out_devptr[MAX_VERTEX] = {NULL};
+    // uint32_t vertex_out_size[MAX_VERTEX] = {0};
+    // uint32_t vertex_out_count[MAX_VERTEX] = {0};
+    // uint32_t vertex_out_stride[MAX_VERTEX] = {0};
 
     struct anv_buffer* index_buffer = NULL;
     VkIndexType index_type = VK_INDEX_TYPE_MAX_ENUM;
     std::vector<std::vector<unsigned>> index_to_draw;
     unsigned width = -1;
     unsigned height = -1;
+    uint32_t constants_dev_addr = 0;
+    float *push_constants = NULL;
+
+    std::unordered_map<std::string, std::string> vertex_id_map;
+    std::unordered_map<std::string, uint32_t*> vertex_out_devptr;
+    std::unordered_map<std::string, unsigned> vertex_out_stride;
+    std::unordered_map<std::string, unsigned> vertex_out_count;
+    std::unordered_map<std::string, unsigned> vertex_out_size;
+    std::unordered_map<std::string, float*> vertex_out;
+
+    unsigned VertexCountPerInstance;
+    unsigned StartVertexLocation;
+    unsigned InstanceCount;
+    unsigned StartInstanceLocation;
+    unsigned BaseVertexLocation;
+    VkCompareOp DepthcmpOp;
+    struct VertexAttrib *VertexAttrib;
+    VkViewport viewports;
+    // struct anv_vertex_binding *vbuffer;
+    struct anv_graphics_pipeline *pipeline;
+    struct anv_descriptor_set *descriptor_set[8] = {NULL};
+    struct anv_descriptor *decoded_descriptors[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
+    struct anv_buffer_view *decoded_bview[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
+
+    ~vertex_metadata() {
+      for (auto attrib : vertex_out) {
+        delete[] vertex_out[attrib.first];
+      }
+      delete (push_constants);
+    //   delete[] descriptor_set;
+    }
+
 }vertex_metadata;
 
 typedef struct FBO {
@@ -228,12 +280,19 @@ typedef struct FBO {
   std::vector<unsigned> thread_info_pixel;
   std::vector<unsigned> thread_info_vertex;
   std::vector<float> thread_info_lod;
+
+//   ~FBO() {
+//     delete[] fbo;
+//     delete[] depthout;
+//   }
 } FBO;
 
 enum VULKAN_APPS {
     RENDER_PASSES = 0,
     INSTANCING, 
     PBRBASIC,
+    PBRTEXTURE,
+    GODOT4_1,
     VULKAN_APPS_MAX
 };
 
@@ -250,9 +309,9 @@ private:
     static std::vector<std::vector<Descriptor> > descriptors;
     static std::ofstream imageFile;
     static bool firstTime;
-    static struct anv_descriptor_set *descriptorSet;
-    static struct vertex_metadata *VertexMeta;
+    static struct anv_descriptor_set *descriptorSet[MAX_DESCRIPTOR_SETS];
     static struct FBO *FBO;
+    // static struct VertexAttrib *VertexAttrib;
     static unsigned texture_width;
     static unsigned texture_height;
 
@@ -271,15 +330,21 @@ private:
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
     static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
     static std::vector<shader_stage_info> shaders;
+    static std::unordered_map<void *, unsigned> pipeline_shader_map;
+    static std::unordered_map<void *, struct VertexAttrib *> pipeline_vertex_map;
 
     static void init(uint32_t launch_width, uint32_t launch_height);
 
 
 public:
+    static struct vertex_metadata *VertexMeta;
     static VULKAN_APPS app_id;
     static unsigned draw;
     static bool is_FS;
     static unsigned thread_count;
+    static std::list<struct vertex_metadata* > draw_meta;
+    static struct anv_buffer* index_buffer;
+    static VkIndexType index_type;
     static void traceRay( // called by raygen shader
                        VkAccelerationStructureKHR _topLevelAS,
     				   uint rayFlags,
@@ -301,20 +366,31 @@ public:
     static void setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreateInfos);
     static void setGeometries(VkAccelerationStructureGeometryKHR* pGeometries, uint32_t geometryCount);
     static void setAccelerationStructure(VkAccelerationStructureKHR accelerationStructure);
-    static void setDescriptorSet(struct anv_descriptor_set *set);
+    static void setDescriptorSet(struct anv_descriptor_set *set, unsigned set_index);
     static void invoke_gpgpusim();
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
     static void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count);
-    static void VulkanRayTracing::vkCmdDraw(
-        struct anv_vertex_binding *vbuffer,
-        struct anv_graphics_pipeline *pipeline,
-        struct VkViewport *viewports, unsigned instanceCount);
+    static void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCount, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex);
     static void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned size);
     static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr, VkIndexType type);
     static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t tid);
     static uint64_t getVertexOutAddr(uint32_t buffer_index, uint32_t tid);
+    static uint64_t getVertexOutAddr(std::string identifier, uint32_t tid);
     static uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset);
+    static void VulkanRayTracing::getFragCoord(uint32_t thread_id, uint32_t &x,
+                                               uint32_t &y);
+    static uint64_t VulkanRayTracing::getConst();
     static float VulkanRayTracing::getTexLOD(unsigned thread_id);
+    static void VulkanRayTracing::saveDumbDraw();
+    static void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
+                                unsigned VertexCount, unsigned StartVertex,
+                                unsigned instanceCount, unsigned StartInstance,
+                                unsigned BaseVertex);
+    // static unsigned VertexCountPerInstance;
+    // static unsigned StartVertexLocation;
+    // static unsigned InstanceCount;
+    // static unsigned StartInstanceLocation;
+    // static unsigned BaseVertexLocation;
 
     static void vkCmdTraceRaysKHR( // called by vulkan application
                       void *raygen_sbt,
@@ -339,10 +415,13 @@ public:
     static void getTexture(struct anv_descriptor *desc, float x, float y, float level, float lod, float &c0, float &c1, float &c2, float &c3, std::vector<ImageMemoryTransactionRecord>& transactions, uint64_t launcher_offset = 0);
     static void image_load(struct anv_descriptor *desc, uint32_t x, uint32_t y, float &c0, float &c1, float &c2, float &c3);
 
+    static void dump_descriptor(unsigned set_index, unsigned desc_index,  struct anv_descriptor *desc, struct anv_buffer_view *bview, bool dump_texture);
+    static void dump_texture(unsigned set_index, unsigned desc_index,  struct anv_descriptor *desc);
     static void dump_descriptor_set(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type);
     static void dump_descriptor_set_for_AS(uint32_t setID, uint32_t descID, void *address, uint32_t desc_size, VkDescriptorType type, uint32_t backwards_range, uint32_t forward_range, bool split_files, VkAccelerationStructureKHR _topLevelAS);
-    static void dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture);
-    static void dump_texture(struct anv_descriptor_set *set);
+    static void dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture, unsigned set_index);
+    static bool check_descriptor_sets(struct anv_descriptor_set *set, unsigned set_index);
+    static void dump_texture(struct anv_descriptor_set *set, unsigned set_index);
     static void dump_AS(struct anv_descriptor_set *set, VkAccelerationStructureKHR _topLevelAS);
     static void dump_callparams_and_sbt(void *raygen_sbt, void *miss_sbt, void *hit_sbt, void *callable_sbt, bool is_indirect, uint32_t launch_width, uint32_t launch_height, uint32_t launch_depth, uint32_t launch_size_addr);
     static void dumpVertex(struct anv_buffer *vbuffer, struct anv_graphics_pipeline * pipeline, uint32_t setID);
@@ -381,6 +460,8 @@ public:
     static void pass_child_addr(void *address);
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);
+    static void map_pipeline_shader(void *ptr, unsigned shader_index);
+    static void map_pipeline_info(void *ptr, VkGraphicsPipelineCreateInfo * pCreateinfo);
 };
 
 #endif /* VULKAN_RAY_TRACING_H */

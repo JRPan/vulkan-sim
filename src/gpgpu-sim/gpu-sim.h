@@ -700,7 +700,7 @@ class gpgpu_sim : public gpgpu_t {
     m_functional_sim_kernel = NULL;
   }
 
-  std::unordered_map<unsigned long, bool> ignore_addr;
+  std::unordered_map<std::string, std::string> identifier_addr;
 };
 
 class exec_gpgpu_sim : public gpgpu_sim {

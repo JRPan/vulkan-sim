@@ -3441,9 +3441,9 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
-  // if (pI->source_line() == 288) {
-  //     printf("tid %u reading %f\n", thread->get_uid() - 1, data.f32);
-  // }
+  if (pI->source_line() == 979) {
+      printf("tid %u reading %f from addr 0x%x\n", thread->get_uid() - 1, data.f32, addr);
+  }
 }
 
 void ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -5865,9 +5865,9 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
-    // if (pI->source_line() == 714) {
-    //   printf("tid %u writing %f\n", thread->get_uid() - 1,data.f32);
-    // }
+    if (pI->source_line() == 1502) {
+      printf("tid %u writing %f to addr 0x%x\n", thread->get_uid() - 1,data.f32, addr);
+    }
     mem->write(addr, size / 8, &data.s64, thread, pI);
     // assert(size == 32);
     // memcpy(address, &data.s64, size / 8);
@@ -6673,7 +6673,7 @@ void txl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   const operand_info &src8 = pI->operand_lookup(8);
   src8_data = thread->get_operand_value(src8, src8, F32_TYPE, thread, 1);
-  float lod = src8_data.f32;
+  // float lod = src8_data.f32;
 
   float c0, c1, c2, c3;
 
@@ -6685,6 +6685,8 @@ void txl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     offset_reg = thread->get_reg(reg_name);
     desc = desc - offset_reg.u64;
   }
+  unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
+  float lod = VulkanRayTracing::getTexLOD(thread_id);
 
   std::vector<ImageMemoryTransactionRecord> transactions;
   VulkanRayTracing::getTexture(desc, x, y,0, lod, c0, c1, c2, c3, transactions, offset_reg.u64);
@@ -7114,16 +7116,20 @@ void store_deref_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
-  //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    if(print_debug_insts)
-    {
-      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-      fflush(stdout);
-    }
-  assert(pI->get_num_operands() == 3);
+  // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 &&
+  // thread->get_tid().z == 0)
+  //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 &&
+  //   thread->get_ctaid().z == 0)
+  if (print_debug_insts) {
+    printf(
+        "########## running line %d of file %s. thread(%d, %d, %d), cta(%d, "
+        "%d, %d)\n",
+        pI->source_line(), pI->source_file(), thread->get_tid().x,
+        thread->get_tid().y, thread->get_tid().z, thread->get_ctaid().x,
+        thread->get_ctaid().y, thread->get_ctaid().z);
+    fflush(stdout);
+  }
+  assert(pI->get_num_operands() == 4);
   ptx_reg_t src1_data, src2_data, data;
 
   const operand_info &dst = pI->dst();
@@ -7133,25 +7139,28 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   src1_data = thread->get_operand_value(src1, dst, U32_TYPE, thread, 0);
   src2_data = thread->get_operand_value(src2, dst, U32_TYPE, thread, 0);
 
-
   std::string name = dst.get_symbol()->name();
   uint32_t size = src1_data.u32;
   uint32_t type = src2_data.u32;
   uint64_t address = NULL;
-  
+  std::string identifier = pI->src3().get_symbol()->name();
+  unsigned thread_id =
+        thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
+
   // printf("########## variable name = %s, size = %d\n", name.c_str(), size);
-  variable_decleration_entry* variable_decleration = thread->RT_thread_data->get_variable_decleration_entry(type, name, size);
+  variable_decleration_entry *variable_decleration =
+      thread->RT_thread_data->get_variable_decleration_entry(type, name, size);
   if (variable_decleration != NULL) {
     address = variable_decleration->address;
-    if(variable_decleration->type != 8192) // MRS_TODO: in raytracing_extended closest hit attribs needs 36 bytes instead of 12 which is wrong
+    if (variable_decleration->type !=
+        8192)  // MRS_TODO: in raytracing_extended closest hit attribs needs 36
+               // bytes instead of 12 which is wrong
       assert(variable_decleration->size == size);
-    assert (address != NULL);
-  } 
-  else {
+    assert(address != NULL);
+  } else {
     // assuming every vertex data is 32-bit
-    unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
-    // assert(thread_id == (thread->get_uid()-1));
-    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size, thread_id);
+    address = thread->RT_thread_data->add_variable_decleration_entry(
+        type, name, identifier, size, thread_id);
   }
 
   data.u64 = address;
@@ -7450,4 +7459,134 @@ void copysignf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     dst_data.f32 *= 1;
   
   thread->set_operand_value(dst, dst_data, F32_TYPE, thread, pI);
+}
+
+void load_first_vertex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t dst_data;
+
+  const operand_info &dst = pI->dst();
+
+
+  dst_data.u32 = VulkanRayTracing::VertexMeta->StartVertexLocation;
+
+  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+}
+
+void load_vertex_id_zero_base_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t dst_data;
+
+  const operand_info &dst = pI->dst();
+
+  dst_data.u32 = VulkanRayTracing::VertexMeta->BaseVertexLocation;
+
+  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+}
+
+void load_base_instance_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t dst_data;
+
+  const operand_info &dst = pI->dst();
+
+  dst_data.u32 = VulkanRayTracing::VertexMeta->StartInstanceLocation;
+
+  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+}
+
+void load_instance_id_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t dst_data;
+
+  const operand_info &dst = pI->dst();
+
+  unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
+  dst_data.u32 = thread_id / VulkanRayTracing::VertexMeta->vb.size();
+  
+  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+}
+
+void discard_if_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t src_data;
+
+  const operand_info &src1 = pI->dst();
+
+  src_data = thread->get_operand_value(src1, src1, B32_TYPE, thread, 1);
+
+  if (src_data.pred == 1) {
+    thread->set_done();
+    thread->exitCore();
+    thread->registerExit();
+  }
+}
+
+void fddx_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t src_data, dst_data;
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+
+  src_data = thread->get_operand_value(src1, dst, F32_TYPE, thread, 1);
+
+  dst_data.f32 = 1;
+  // dst_data.f32 = src_data.f32 - src_data.f32;
+  
+  thread->set_operand_value(dst, dst_data, F32_TYPE, thread, pI);
+}
+
+void fddy_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t src_data, dst_data;
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+
+  src_data = thread->get_operand_value(src1, dst, F32_TYPE, thread, 1);
+
+  dst_data.f32 = 1;
+  // dst_data.f32 = src_data.f32 - src_data.f32;
+  
+  thread->set_operand_value(dst, dst_data, F32_TYPE, thread, pI);
+}
+
+void extract_u8_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t src_data1, src_data2, dst_data;
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+  const operand_info &src2 = pI->src2();
+
+  src_data1 = thread->get_operand_value(src1, dst, U32_TYPE, thread, 1);
+  src_data2 = thread->get_operand_value(src2, dst, U32_TYPE, thread, 1);
+
+  // or u8?
+  dst_data.u32 = src_data1.u32 >> (src_data2.u32 * 8);
+
+  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+}
+
+void load_frag_coord_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t x_data, y_data;
+  uint64_t address = NULL;
+
+  const operand_info &dst1 = pI->dst();
+  const operand_info &dst2 = pI->src1();
+  const operand_info &dst3 = pI->src2();
+  const operand_info &dst4 = pI->src3();
+
+  unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
+  unsigned x = -1;
+  unsigned y = -1;
+  VulkanRayTracing::getFragCoord(thread_id, x, y);
+  assert(x != -1 && y != -1);
+  x_data.u32 = x;
+  y_data.u32 = y;
+
+  ptx_reg_t zero;
+  zero.u32 = 0;
+
+  thread->set_operand_value(dst1, x_data, U32_TYPE, thread, pI);
+  thread->set_operand_value(dst2, y_data, U32_TYPE, thread, pI);
+  thread->set_operand_value(dst3, zero, U32_TYPE, thread, pI);
+  thread->set_operand_value(dst4, zero, U32_TYPE, thread, pI);
+}
+
+void txs_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(0);
 }

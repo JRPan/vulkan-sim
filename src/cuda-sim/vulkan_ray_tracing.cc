@@ -100,7 +100,7 @@ std::ofstream VulkanRayTracing::imageFile;
 bool VulkanRayTracing::firstTime = true;
 std::vector<shader_stage_info> VulkanRayTracing::shaders;
 // RayDebugGPUData VulkanRayTracing::rayDebugGPUData[2000][2000] = {0};
-struct anv_descriptor_set* VulkanRayTracing::descriptorSet = NULL;
+struct anv_descriptor_set* VulkanRayTracing::descriptorSet[MAX_DESCRIPTOR_SETS] = {NULL};
 void* VulkanRayTracing::launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS] = {NULL};
 void* VulkanRayTracing::launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS] = {NULL};
 std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
@@ -118,6 +118,18 @@ VULKAN_APPS VulkanRayTracing::app_id = VULKAN_APPS_MAX;
 unsigned VulkanRayTracing::draw = 0;
 unsigned VulkanRayTracing::thread_count = 0;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
+std::unordered_map<void *, unsigned> VulkanRayTracing::pipeline_shader_map;
+std::unordered_map<void *, struct VertexAttrib *>
+    VulkanRayTracing::pipeline_vertex_map;
+// struct VertexAttrib * VulkanRayTracing::VertexAttrib = NULL;
+// unsigned VulkanRayTracing::VertexCountPerInstance;
+// unsigned VulkanRayTracing::StartVertexLocation;
+// unsigned VulkanRayTracing::InstanceCount;
+// unsigned VulkanRayTracing::StartInstanceLocation;
+// unsigned VulkanRayTracing::BaseVertexLocation;
+std::list<struct vertex_metadata* > VulkanRayTracing::draw_meta;
+struct anv_buffer* VulkanRayTracing::index_buffer = NULL;
+VkIndexType VulkanRayTracing::index_type = VK_INDEX_TYPE_MAX_ENUM;
 
 float get_norm(float4 v)
 {
@@ -383,7 +395,8 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
     if (!use_external_launcher && !dumped) 
     {
-        dump_AS(VulkanRayTracing::descriptorSet, _topLevelAS);
+      assert(0);
+        // dump_AS(VulkanRayTracing::descriptorSet, _topLevelAS);
         std::cout << "Trace dumped" << std::endl;
         dumped = true;
     }
@@ -1037,9 +1050,9 @@ std::string base_name(std::string & path)
   return path.substr(path.find_last_of("/") + 1);
 }
 
-void VulkanRayTracing::setDescriptorSet(struct anv_descriptor_set *set)
+void VulkanRayTracing::setDescriptorSet(struct anv_descriptor_set *set, unsigned set_index)
 {
-    VulkanRayTracing::descriptorSet = set;
+    VulkanRayTracing::descriptorSet[set_index] = set;
 }
 
 static bool invoked = false;
@@ -1301,7 +1314,7 @@ const bool writeImageBinary = true;
 #define SKIP_VS false
 #define SKIP_FS false
 unsigned DRAW_START = 1;
-unsigned DRAW_END = 1;
+unsigned DRAW_END = 2;
 
 
 // workloads: 
@@ -1334,113 +1347,238 @@ unsigned DRAW_END = 1;
 // unsigned out_pos_index = 5;
 // #endif
 
-unsigned *attrib_stride = NULL;
-unsigned out_attrib_count = -1;
-unsigned *out_attrib_size = NULL;
-unsigned out_pos_index = -1;
+// unsigned out_attrib_count = -1;
+// unsigned *out_attrib_size = NULL;
+// unsigned out_pos_index = -1;
 unsigned tex_index = -1;
+void VulkanRayTracing::saveDumbDraw() {
+    draw_meta.push_back(NULL);
+}
 
-
-void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned instanceCount) {
-  // assume only vertex and frag. No geometry or tessellation
-  unsigned vertex_id = -1;
-  unsigned frag_id = -1;
+void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
+                                unsigned VertexCount, unsigned StartVertex,
+                                unsigned instanceCount, unsigned StartInstance,
+                                unsigned BaseVertex) {
+  if (VertexCount == 6) {
+    return;
+  }
+  VertexMeta = new struct vertex_metadata();
+  // VertexMeta->vbuffer = cmd_buffer->state.vertex_bindings;
   struct anv_vertex_binding *vbuffer = cmd_buffer->state.vertex_bindings;
-  struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
-  VkViewport *viewports = cmd_buffer->state.gfx.dynamic.viewport.viewports;
-  VertexMeta->push_constants = (float*) &cmd_buffer->state.gfx.base.push_constants.client_data;
+  VertexMeta->pipeline = cmd_buffer->state.gfx.pipeline;
+  assert(cmd_buffer->state.gfx.dynamic.viewport.count == 1);
+  VertexMeta->viewports = *(cmd_buffer->state.gfx.dynamic.viewport.viewports);
+  VertexMeta->push_constants = new float[128];
+  memcpy(VertexMeta->push_constants,
+         cmd_buffer->state.gfx.base.push_constants.client_data, 128 * 4);
+    //   (float *)&cmd_buffer->state.gfx.base.push_constants.client_data;
+  assert(pipeline_shader_map.find((void *)VertexMeta->pipeline) !=
+         pipeline_shader_map.end());
+  unsigned vertex_id = pipeline_shader_map.at((void *)VertexMeta->pipeline);
+  unsigned frag_id = vertex_id + 1;
+  VertexMeta->VertexCountPerInstance = VertexCount;
+  VertexMeta->StartVertexLocation = StartVertex;
+  VertexMeta->InstanceCount = instanceCount;
+  VertexMeta->StartInstanceLocation = StartInstance;
+  VertexMeta->BaseVertexLocation = BaseVertex;
+  VertexMeta->DepthcmpOp = cmd_buffer->state.gfx.dynamic.depth_compare_op;
+  VertexMeta->VertexAttrib = pipeline_vertex_map.at((void *)VertexMeta->pipeline);
+  VertexMeta->index_buffer = index_buffer;
+  VertexMeta->index_type = index_type;
 
+  for (unsigned i = 0; i < MAX_VBS; i++) {
+    if (vbuffer[i].buffer) {
+      VertexMeta->vertex_buffers[i] = vbuffer[i].buffer;
+      VertexMeta->vertex_size[i] = vbuffer[i].buffer->size;
+      VertexMeta->vertex_count[i] = VertexMeta->vertex_size[i] / 4;
+      VertexMeta->vertex_stride[i] = VertexMeta->pipeline->vb[i].stride;
+      // dumpVertex(vbuffer[i].buffer, VertexMeta->pipeline, i);
+      // assert(VertexMeta->pipeline->vb[i].stride % 4 == 0);
+      // assert(vbuffer[i].buffer->size % (VertexMeta->pipeline->vb[i].stride / 4) == 0);
+    }
+  }
+
+  for (unsigned i = 0; i < 8; i++) {
+    if (cmd_buffer->state.gfx.base.descriptors[i] == NULL) {
+      continue;
+    }
+    struct anv_descriptor_set *set = cmd_buffer->state.gfx.base.descriptors[i];
+    // for (int j = 0; j < set->layout->binding_count; j++) {
+    //   const struct anv_descriptor_set_binding_layout *bind_layout =
+    //       &set->layout->binding[j];
+    //   if (bind_layout->type == (unsigned)-1) {
+    //     continue;
+    //   }
+    //   struct anv_descriptor *desc =
+    //       &set->descriptors[bind_layout->descriptor_index];
+
+    //   struct anv_buffer_view *bview =
+    //       &set->buffer_views[bind_layout->buffer_view_index];
+    //   VertexMeta->decoded_descriptors[i][j] = desc;
+    //   VertexMeta->decoded_bview[i][j] = bview;
+    // }
+
+    // dump_descriptor_sets(cmd_buffer->state.gfx.base.descriptors[i], true, i);
+
+    // anv_descriptor_set *set = new anv_descriptor_set();
+    // memcpy(set, cmd_buffer->state.gfx.base.descriptors[i], sizeof(anv_descriptor_set));
+    VertexMeta->descriptor_set[i] = cmd_buffer->state.gfx.base.descriptors[i];
+    // VertexMeta->descriptor_set[i] = cmd_buffer->state.gfx.base.descriptors[i];
+  }
+
+  draw_meta.push_back(VertexMeta);
+}
+
+void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCount, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex) {
+  // assume only vertex and frag. No geometry or tessellation
+  // struct anv_vertex_binding *vbuffer = cmd_buffer->state.vertex_bindings;
+  while(true) {
+
+  if (draw_meta.empty()) {
+    return;
+  }
+  VertexMeta = draw_meta.front();
+  
+  if (!VertexMeta) {
+    draw_meta.pop_front();
+    return;
+  }
+
+  if (VertexMeta->VertexCountPerInstance == 6) {
+    delete(VertexMeta->push_constants);
+    delete (VertexMeta);
+    VertexMeta = NULL;
+    draw_meta.pop_front();
+    return;
+  }
+
+  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+    if (VertexMeta->descriptor_set[i] == NULL) {
+      continue;
+    }
+    bool ready = check_descriptor_sets(VertexMeta->descriptor_set[i], i);
+    if (!ready) {
+      return;
+    }
+  }
+
+  struct anv_graphics_pipeline *pipeline = VertexMeta->pipeline;
+  // VkViewport *viewports = cmd_buffer->state.gfx.dynamic.viewport.viewports;
+  // VertexMeta->push_constants =
+      // (float *)&cmd_buffer->state.gfx.base.push_constants.client_data;
+  // assert(pipeline_shader_map.find((void*) pipeline) != pipeline_shader_map.end());
+  unsigned vertex_id = pipeline_shader_map.at((void*) pipeline);
+  unsigned frag_id = vertex_id + 1;
+  // VkCompareOp DepthcmpOp = cmd_buffer->state.gfx.dynamic.depth_compare_op;
+  // VertexAttrib = pipeline_vertex_map.at((void*) pipeline);
 
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
 
   char const *app_env = std::getenv("VULKAN_APP");
-  if (app_env == NULL) {
-    printf("VULKAN_APP not set\n");
-    assert(0 && "VULKAN_APP not set");
-  }
+  // if (app_env == NULL) {
+  //   printf("VULKAN_APP not set\n");
+  //   assert(0 && "VULKAN_APP not set");
+  // }
+  tex_index = 1;
 
   std::string vulkan_app(app_env);
   // technically we can get the vertex input attributes from the pipeline. But I
   // don't know how to get the info on vertex outputs. So if we had to manually
   // set the output. Just set the input as well.
-  if (vulkan_app.find("render_passes") != std::string::npos) {
-    VulkanRayTracing::app_id = RENDER_PASSES;
+  // if (vulkan_app.find("render_passes") != std::string::npos) {
+  //   VulkanRayTracing::app_id = RENDER_PASSES;
 
-    attrib_stride = new unsigned[1]{0};
-    out_attrib_count = 3;
-    out_attrib_size = new unsigned[3]{16,8,12};
-    out_pos_index = 0;
-    tex_index = 1;
-    vertex_id = 0;
-    frag_id = 1;
+  //   attrib_stride = new unsigned[1]{0};
+  //   out_attrib_count = 3;
+  //   out_attrib_size = new unsigned[3]{16,8,12};
+  //   out_pos_index = 0;
+  //   tex_index = 1;
+  //   // vertex_id = 0;
+  //   // frag_id = 1;
 
-  } else if (vulkan_app.find("instancing") != std::string::npos) {
-    VulkanRayTracing::app_id = INSTANCING;
+  // } else if (vulkan_app.find("instancing") != std::string::npos) {
+  //   VulkanRayTracing::app_id = INSTANCING;
 
-    attrib_stride = new unsigned[7]{0,12,24,0,12,24,28};
-    out_attrib_count = 6;
-    out_attrib_size = new unsigned[6]{12,12,12,12,12,16};
-    out_pos_index = 5;
-    tex_index = 2;
-    if (draw == 0) {
-      vertex_id = 4;
-      frag_id = 5;
-    } else if (draw == 1) {
-      vertex_id = 2;
-      frag_id = 3;
-    } 
+  //   attrib_stride = new unsigned[7]{0,12,24,0,12,24,28};
+  //   out_attrib_count = 6;
+  //   out_attrib_size = new unsigned[6]{12,12,12,12,12,16};
+  //   out_pos_index = 5;
+  //   tex_index = 2;
+  //   // if (draw == 0) {
+  //   //   vertex_id = 4;
+  //   //   frag_id = 5;
+  //   // } else if (draw == 1) {
+  //   //   vertex_id = 2;
+  //   //   frag_id = 3;
+  //   // } 
 
-  } else if (vulkan_app.find("pbrbasic") != std::string::npos) {
-    VulkanRayTracing::app_id = PBRBASIC;
-    attrib_stride = new unsigned[2]{0,12};
-    out_attrib_count = 3;
-    out_attrib_size = new unsigned[out_attrib_count]{12,12,16};
-    out_pos_index = 2;
-    tex_index = -1;
+  // } else if (vulkan_app.find("pbrbasic") != std::string::npos) {
+  //   VulkanRayTracing::app_id = PBRBASIC;
+  //   attrib_stride = new unsigned[2]{0,12};
+  //   out_attrib_count = 3;
+  //   out_attrib_size = new unsigned[out_attrib_count]{12,12,16};
+  //   out_pos_index = 2;
+  //   tex_index = -1;
 
-    vertex_id = 2;
-    frag_id = 3;
-  } else if (vulkan_app.find("pbrtexture") != std::string::npos) {
-    VulkanRayTracing::app_id = PBRTEXTURE;
-    attrib_stride = new unsigned[4]{0,12,24,80};
-    out_attrib_count = 5;
-    out_attrib_size = new unsigned[out_attrib_count]{12,12,8,16,16};
-    out_pos_index = 4;
-    tex_index = 2;
+  //   // vertex_id = 2;
+  //   // frag_id = 3;
 
-    vertex_id = 10;
-    frag_id = 11;
-  } else {
-    printf("unknown app\n");
-    assert(0 && "unknown app");
-  }
+  // } else if (vulkan_app.find("pbrtexture") != std::string::npos) {
+  //   VulkanRayTracing::app_id = PBRTEXTURE;
+  //   attrib_stride = new unsigned[4]{0,12,24,80};
+  //   out_attrib_count = 5;
+  //   out_attrib_size = new unsigned[out_attrib_count]{12,12,8,16,16};
+  //   out_pos_index = 4;
+  //   tex_index = 2;
 
-  if (viewports[0].width != 1280) return;
+  //   // vertex_id = 10;
+  //   // frag_id = 11;
+  // } else if (vulkan_app.find("godot4_1") != std::string::npos) {
+  //   VulkanRayTracing::app_id = GODOT4_1;
+  //   attrib_stride = new unsigned[4]{0,12,24,80};
+  //   out_attrib_count = 5;
+  //   out_attrib_size = new unsigned[out_attrib_count]{12,12,8,16,16};
+  //   out_pos_index = 4;
+  //   tex_index = 2;
 
-  if (draw < DRAW_START) {
-    draw++;
-    return;
-  }
-  if (draw > DRAW_END) {
-    context->get_device()->get_gpgpu()->gtrace.close();
-    system("mv traces.traceg complete.traceg");
-    exit(0);
-  }
+  //   // vertex_id = 10;
+  //   // frag_id = 11;
+  // } else {
+  //   printf("unknown app\n");
+  //   assert(0 && "unknown app");
+  // }
+//   if (Depthcmp == VK_COMPARE_OP_NEVER) return;
+//   if (viewports[0].width != 1152) return;
+
+//   if (draw < DRAW_START) {
+//     draw++;
+//     return;
+//   }
+//   if (draw > DRAW_END) {
+//     context->get_device()->get_gpgpu()->gtrace.close();
+//     system("mv traces.traceg complete.traceg");
+//     exit(0);
+//   }
+
+  // draw++;
+  // printf("Starting Drawcall #%u\n", draw);
+  // return;
+
 
   FILE *fp;
   // create fbo
   printf("Starting Drawcall #%u\n", draw);
   if (!FBO->fbo) {
-    printf("render resolution: %u x %u\n", (unsigned) viewports[0].width,(unsigned) viewports[0].height);
-    FBO->width = viewports[0].width;
-    FBO->height = viewports[0].height;
-    FBO->width = 2560;
-    FBO->height = 1440;
+    printf("render resolution: %u x %u\n", (unsigned) VertexMeta->viewports.width,(unsigned) VertexMeta->viewports.height);
+    FBO->width = VertexMeta->viewports.width;
+    FBO->height = VertexMeta->viewports.height;
+    // FBO->width = 2560;
+    // FBO->height = 1440;
     // FBO->width = 3840;
     // FBO->height = 2160;
-    FBO->x = viewports[0].x;
-    FBO->y = viewports[0].y;
+    FBO->x = VertexMeta->viewports.x;
+    FBO->y = VertexMeta->viewports.y;
     FBO->fbo_size = 4 * FBO->width * FBO->height * sizeof(float);
     FBO->fbo_count = 4 * FBO->width * FBO->height;
     FBO->fbo_stride = 16;
@@ -1463,10 +1601,20 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
   char *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
   if (VertexMeta->index_type == VK_INDEX_TYPE_UINT16) {
     index_size = sizeof(u_int16_t);
-    // u_int16_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+    if (((u_int16_t*) index_buffer)[0] == ((u_int16_t*) index_buffer)[1] &&
+        ((u_int16_t*) index_buffer)[1] == ((u_int16_t*) index_buffer)[2] && 
+        ((u_int16_t*) index_buffer)[0] == 0) {
+      VertexMeta = NULL;
+      return;
+    }
   } else if (VertexMeta->index_type == VK_INDEX_TYPE_UINT32) {
     index_size = sizeof(u_int32_t);
-    // u_int32_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
+    if (((u_int32_t*) index_buffer)[0] == ((u_int32_t*) index_buffer)[1] &&
+        ((u_int32_t*) index_buffer)[1] == ((u_int32_t*) index_buffer)[2] && 
+        ((u_int32_t*) index_buffer)[0] == 0) {
+      VertexMeta = NULL;
+      return;
+    }
   } else {
     // add your type
     printf("unsupported index type\n");
@@ -1497,40 +1645,72 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
 
   VulkanRayTracing::is_FS = false;
   for (unsigned i = 0; i < MAX_VBS; i++) {
-    if (vbuffer[i].buffer) {
+    if (VertexMeta->vertex_buffers[i]) {
       // printf("vb[%u] is used\n", i);
-      dumpVertex(vbuffer[i].buffer, pipeline, i);
+      dumpVertex(VertexMeta->vertex_buffers[i], pipeline, i);
       // stride should be multilpe of 4 bytes -> vectors
-      assert(pipeline->vb[i].stride % 4 == 0);
-      VertexMeta->vertex_stride[i] = pipeline->vb[i].stride;
+      assert(VertexMeta->vertex_stride[i] % 4 == 0);
+      // VertexMeta->vertex_stride[i] = pipeline->vb[i].stride;
       // vertex count should be multiple of vector size
-      assert(vbuffer[i].buffer->size % (pipeline->vb[i].stride / 4) == 0);
+      assert(VertexMeta->vertex_buffers[i]->size %
+                 (VertexMeta->vertex_stride[i] / 4) == 0);
     }
   }
   // Dump Descriptor Sets
-  dump_descriptor_sets(VulkanRayTracing::descriptorSet, false);
-  
-  if (app_id == INSTANCING && draw == 1) {
-    instanceCount = 2048;
-  }
-  thread_count = VertexMeta->vb.size() * instanceCount;
+//   return;
+  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+  //     dump_descriptor(i, j, VertexMeta->decoded_descriptors[i][j], VertexMeta->decoded_bview[i][j], false);
+  //   }
+  // }
 
-  for (unsigned i = 0; i < out_attrib_count; i++) {
-    VertexMeta->vertex_out_stride[i] = out_attrib_size[i];
-    VertexMeta->vertex_out_count[i] = out_attrib_size[i] / 4 * thread_count;
-    VertexMeta->vertex_out_size[i] = out_attrib_size[i] * thread_count;
-    VertexMeta->vertex_out[i] = new float[VertexMeta->vertex_out_count[i]];
-    VertexMeta->vertex_out_devptr[i] =
-        context->get_device()->get_gpgpu()->gpu_malloc(
-            VertexMeta->vertex_out_size[i]);
+  for (unsigned i = 0; i < 8; i++) {
+    if (VertexMeta->descriptor_set[i] == NULL) {
+      continue;
+    }
+    dump_descriptor_sets(VertexMeta->descriptor_set[i], false, i);
   }
+  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+  //   // if (VertexMeta->descriptor_set[i] == NULL) {
+  //   //   continue;
+  //   // }
+  //   // dump_descriptor_sets(VertexMeta->descriptor_set[i], false, i);
+  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+  //     if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
+  //       continue;
+  //     }
+  //     u_int32_t *devPtr;
+  //     u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
+  //     void *address = VertexMeta->decoded_descriptors[i][j].addr;
+  //     // gpgpu_context *ctx = GPGPU_Context();
+  //     // CUctx_st *context = GPGPUSim_Context(ctx);
+  //     devPtr =
+  //         context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+  //     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
+  //                                                       size * sizeof(float));
+  //     // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+  //     // print_memcpy("MemcpyVulkan",devPtr, size, 0);
+  //     if (VertexMeta->decoded_descriptors[i][j].is_texture) {
+  //       continue;
+  //       // ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
+  //       //     devPtr;
+  //       // ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
+  //       //     ->deviceAddress = devPtr;
+  //     } else {
+  //       launcher_descriptorSets[i][j] = address;
+  //       launcher_deviceDescriptorSets[i][j] = devPtr;
+  //       print_memcpy("MemcpyVulkan",devPtr, size, 0);
+  //     }
+  //   }
+  // }
 
-  if (app_id == PBRBASIC) {
-    VertexMeta->constants_dev_addr =
-        context->get_device()->get_gpgpu()->gpu_malloc(1024);
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(VertexMeta->constants_dev_addr, VertexMeta->push_constants, 1024);
-    print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 1024, 0);
-  }
+  // InstanceCount = 20;
+  thread_count = VertexMeta->vb.size() * VertexMeta->InstanceCount;
+
+  VertexMeta->constants_dev_addr =
+      context->get_device()->get_gpgpu()->gpu_malloc(128);
+  context->get_device()->get_gpgpu()->memcpy_to_gpu(VertexMeta->constants_dev_addr, VertexMeta->push_constants, 128);
+  print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 128, 0);
   if (!SKIP_VS) {
     // run vertex shader
     run_shader(vertex_id,thread_count);
@@ -1539,54 +1719,77 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
   std::string mesa_root = getenv("MESA_ROOT");
   std::string filePath = "../fb/depth_buffer/";
 
-  for (unsigned i = 0; i < out_attrib_count; i++) {
-    std::string vb = mesa_root + "../vb/" + "vb" + std::to_string(i) + "_" +
+  // app_id = INSTANCING;
+  // if (app_id == INSTANCING) {
+  //   unsigned size = 12;
+  //   std::string name = "\%inColor";
+  //   std::string identifier = "VARYING_SLOT_VAR1_xyz";
+  //   uint32_t *dev_ptr = context->get_device()->get_gpgpu()->gpu_malloc(
+  //       VulkanRayTracing::thread_count * size);
+  //   VulkanRayTracing::VertexMeta->vertex_out_devptr.insert(
+  //       std::make_pair(name, dev_ptr));
+  //   VulkanRayTracing::VertexMeta->vertex_id_map.insert(
+  //       std::make_pair(identifier, name));
+  //   VulkanRayTracing::VertexMeta->vertex_out_stride.insert(
+  //       std::make_pair(name, size));
+  // }
+
+  for (auto out_attrib : VertexMeta->vertex_id_map) {
+    std::string attrib_name = out_attrib.second;
+    unsigned stride = VertexMeta->vertex_out_stride.at(attrib_name);
+    VertexMeta->vertex_out_count[attrib_name] = stride / 4 * thread_count;
+    VertexMeta->vertex_out_size[attrib_name] = stride * thread_count;
+    VertexMeta->vertex_out[attrib_name] = new float[VertexMeta->vertex_out_count.at(attrib_name)];
+  }
+
+  for (auto out_attrib : VertexMeta->vertex_id_map) {
+    std::string attrib_name = out_attrib.second;
+    std::string vb = mesa_root + "../vb/" + "vb" + attrib_name + "_" +
                      std::to_string(draw) + ".bin";
 
     if (!SKIP_VS) {
       context->get_device()->get_gpgpu()->memcpy_from_gpu(
-          VertexMeta->vertex_out[i], VertexMeta->vertex_out_devptr[i],
-          VertexMeta->vertex_out_size[i]);
+          VertexMeta->vertex_out.at(attrib_name), VertexMeta->vertex_out_devptr.at(attrib_name),
+          VertexMeta->vertex_out_size.at(attrib_name));
       FILE *fp;
       fp = fopen(vb.c_str(), "wb+");
-      fwrite(VertexMeta->vertex_out[i], 1, VertexMeta->vertex_out_size[i], fp);
+      fwrite(VertexMeta->vertex_out.at(attrib_name), 1, VertexMeta->vertex_out_size.at(attrib_name), fp);
       fclose(fp);
     } else {
-      VulkanRayTracing::read_binary_file(vb.c_str(), VertexMeta->vertex_out[i],
-                                         VertexMeta->vertex_out_size[i]);
+      VulkanRayTracing::read_binary_file(vb.c_str(), VertexMeta->vertex_out.at(attrib_name),
+                                         VertexMeta->vertex_out_size.at(attrib_name));
       context->get_device()->get_gpgpu()->memcpy_to_gpu(
-          VertexMeta->vertex_out_devptr[i], VertexMeta->vertex_out[i],
-          VertexMeta->vertex_out_size[i]);
+          VertexMeta->vertex_out_devptr.at(attrib_name), VertexMeta->vertex_out.at(attrib_name),
+          VertexMeta->vertex_out_size.at(attrib_name));
     }
+  }
+  for (unsigned i = 0; i < VertexMeta->vertex_out_count["\%inColor"]; i++) {
+      VertexMeta->vertex_out.at("\%inColor")[i] = 1.0f;
   }
 
-  if (app_id == INSTANCING) {
-    for (unsigned i = 0; i < VertexMeta->vertex_out_count[1]; i++) {
-      VertexMeta->vertex_out[1][i] = 1.0f;
-    }
-  }
 
   // vertex-post processing
   // tranform & clipping
   std::vector<std::vector<float>> vertex_ndc;
   std::vector<std::vector<float>> vertex_screen;
   std::vector<std::vector<float>> vertex_raw;
-  for (unsigned i = 0; i < VertexMeta->vertex_out_count[out_pos_index]; i += 4) {
+  std::string pos_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_POS_xyzw");
+  for (unsigned i = 0; i < VertexMeta->vertex_out_count.at(pos_id); i += 4) {
     // transform to NDC space
     std::vector<float> ndc;
     std::vector<float> view;
     std::vector<float> raw;
-    float ndc_x = (VertexMeta->vertex_out[out_pos_index][i] /
-                   VertexMeta->vertex_out[out_pos_index][i + 3]);
+    float ndc_x = (VertexMeta->vertex_out.at(pos_id)[i] /
+                   VertexMeta->vertex_out.at(pos_id)[i + 3]);
     ndc.push_back(ndc_x);
-    float ndc_y = (VertexMeta->vertex_out[out_pos_index][i + 1] /
-                   VertexMeta->vertex_out[out_pos_index][i + 3]);
+    float ndc_y = (VertexMeta->vertex_out.at(pos_id)[i + 1] /
+                   VertexMeta->vertex_out.at(pos_id)[i + 3]);
     ndc.push_back(ndc_y);
-    float ndc_z = (VertexMeta->vertex_out[out_pos_index][i + 2] /
-                   VertexMeta->vertex_out[out_pos_index][i + 3]);
+    float ndc_z = (VertexMeta->vertex_out.at(pos_id)[i + 2] /
+                   VertexMeta->vertex_out.at(pos_id)[i + 3]);
     ndc.push_back(ndc_z);
-    float ndc_w = (VertexMeta->vertex_out[out_pos_index][i + 3] /
-                   VertexMeta->vertex_out[out_pos_index][i + 3]);
+    float ndc_w = (VertexMeta->vertex_out.at(pos_id)[i + 3] /
+                   VertexMeta->vertex_out.at(pos_id)[i + 3]);
     ndc.push_back(ndc_w);
     vertex_ndc.push_back(ndc);
 
@@ -1596,20 +1799,17 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
     float screen_x = (ndc_x + 1) * (FBO->width / 2) + FBO->x;
     float screen_y = (ndc_y + 1) * (FBO->height / 2) + FBO->y;
     float screen_z = 0.0f + ndc_z * (1.0f - 0.0f);
-    if (app_id == PBRBASIC) {
-      screen_z = 1.0f - screen_z;
-    }
     view.push_back(screen_x);
     view.push_back(screen_y);
     view.push_back(screen_z);
     view.push_back(ndc_w);
     vertex_screen.push_back(view);
 
-    assert(!isnan(VertexMeta->vertex_out[out_pos_index][i]));
-    raw.push_back(VertexMeta->vertex_out[out_pos_index][i]);
-    raw.push_back(VertexMeta->vertex_out[out_pos_index][i+1]);
-    raw.push_back(VertexMeta->vertex_out[out_pos_index][i+2]);
-    raw.push_back(VertexMeta->vertex_out[out_pos_index][i+3]);
+    assert(!isnan(VertexMeta->vertex_out.at(pos_id)[i]));
+    raw.push_back(VertexMeta->vertex_out.at(pos_id)[i]);
+    raw.push_back(VertexMeta->vertex_out.at(pos_id)[i+1]);
+    raw.push_back(VertexMeta->vertex_out.at(pos_id)[i+2]);
+    raw.push_back(VertexMeta->vertex_out.at(pos_id)[i+3]);
     vertex_raw.push_back(raw);
   }
   assert(vertex_screen.size() == thread_count);
@@ -1620,7 +1820,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
   std::vector<std::vector<unsigned>> primitives;
 // #if WORKLOAD == 0 || WORKLOAD == 1
   // uint16_t *index_buffer = anv_address_map(VertexMeta->index_buffer->address);
-  for (unsigned instance = 0; instance < instanceCount; instance++) {
+  for (unsigned instance = 0; instance < VertexMeta->InstanceCount; instance++) {
     for (unsigned i = 0; i < VertexMeta->index_buffer->size / index_size;
          i += 3) {
       unsigned selected_vpc = i / group_size;
@@ -1663,11 +1863,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
 
   unsigned tile_size = 8;
   std::vector<unsigned> drawed_pixels;
-  std::vector<std::vector<std::vector<float>>> attribs;
-  std::unordered_map<unsigned, unsigned> pixel_map;
+  std::unordered_map<std::string, std::vector<std::vector<float>>> attribs;
   std::vector<std::vector<unsigned>> tile_map;
   tile_map.resize(FBO->width * FBO->height / tile_size / tile_size);
-  attribs.resize(out_attrib_count);
+
+  for (auto attrib : VertexMeta->vertex_id_map) {
+    std::string attrib_name = attrib.second;
+    attribs.insert(std::make_pair(attrib_name, std::vector<std::vector<float>>()));
+  }
+
   for (std::vector<std::vector<unsigned>>::iterator prim = primitives.begin();
        prim < primitives.end(); prim++) {
     double x1 = vertex_screen[(*prim)[0]][0];
@@ -1710,8 +1914,25 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
                       v * vertex_screen[(*prim)[1]][2] +
                       w * vertex_screen[(*prim)[2]][2];
         // printf("depth is %f\n",depth);
-        if (depth < FBO->depthout[pixel]) {
-          continue;
+        switch(VertexMeta->DepthcmpOp) {
+          case VK_COMPARE_OP_GREATER:
+            if (FBO->depthout[pixel] > depth) {
+              continue;
+            }
+            break;
+          case VK_COMPARE_OP_LESS:
+            if (FBO->depthout[pixel] < depth) {
+              continue;
+            }
+            break;
+          case VK_COMPARE_OP_LESS_OR_EQUAL:
+            if (FBO->depthout[pixel] <= depth) {
+              continue;
+            }
+            break;
+          default:
+            printf("unsupported depth compare op\n");
+            assert(0 && "unsupported depth compare op");
         }
         if (SKIP_FS) {
           FBO->fbo[(pixel) * 4] = r;
@@ -1720,17 +1941,31 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
           FBO->fbo[(pixel) * 4 + 3] = 1.0f;
         }
 
-        for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
+        for (auto attrib : VertexMeta->vertex_id_map) {
           std::vector<float> vec;
-          switch (out_attrib_size[attrib]) {
+          std::string attrib_name = attrib.second;
+          switch (VertexMeta->vertex_out_stride.at(attrib_name)) {
+            case 4: {
+                float v0 = VertexMeta->vertex_out.at(
+                                attrib_name)[1 * (*prim)[0]] *
+                                u +
+                            VertexMeta->vertex_out.at(
+                                attrib_name)[1 * (*prim)[1]] *
+                                v +
+                            VertexMeta->vertex_out.at(
+                                attrib_name)[1 * (*prim)[2]] *
+                                w;
+                vec.push_back(v0);
+                break;
+            }
             case 8: {
               // vec2
-              float v0 = VertexMeta->vertex_out[attrib][2 * (*prim)[0]] * u +
-                        VertexMeta->vertex_out[attrib][2 * (*prim)[1]] * v +
-                        VertexMeta->vertex_out[attrib][2 * (*prim)[2]] * w;
-              float v1 = VertexMeta->vertex_out[attrib][2 * (*prim)[0] + 1] * u +
-                        VertexMeta->vertex_out[attrib][2 * (*prim)[1] + 1] * v +
-                        VertexMeta->vertex_out[attrib][2 * (*prim)[2] + 1] * w;
+              float v0 = VertexMeta->vertex_out.at(attrib_name)[2 * (*prim)[0]] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[2 * (*prim)[1]] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[2 * (*prim)[2]] * w;
+              float v1 = VertexMeta->vertex_out.at(attrib_name)[2 * (*prim)[0] + 1] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[2 * (*prim)[1] + 1] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[2 * (*prim)[2] + 1] * w;
               assert(!isnan(v0) && !isnan(v1));
               vec.push_back(v0);
               vec.push_back(v1);
@@ -1738,15 +1973,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
             }
             case 12: {
               // vec3
-              float v0 = VertexMeta->vertex_out[attrib][3 * (*prim)[0]] * u +
-                        VertexMeta->vertex_out[attrib][3 * (*prim)[1]] * v +
-                        VertexMeta->vertex_out[attrib][3 * (*prim)[2]] * w;
-              float v1 = VertexMeta->vertex_out[attrib][3 * (*prim)[0] + 1] * u +
-                        VertexMeta->vertex_out[attrib][3 * (*prim)[1] + 1] * v +
-                        VertexMeta->vertex_out[attrib][3 * (*prim)[2] + 1] * w;
-              float v2 = VertexMeta->vertex_out[attrib][3 * (*prim)[0] + 2] * u +
-                        VertexMeta->vertex_out[attrib][3 * (*prim)[1] + 2] * v +
-                        VertexMeta->vertex_out[attrib][3 * (*prim)[2] + 2] * w;
+              float v0 = VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[0]] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[1]] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[2]] * w;
+              float v1 = VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[0] + 1] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[1] + 1] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[2] + 1] * w;
+              float v2 = VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[0] + 2] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[1] + 2] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[3 * (*prim)[2] + 2] * w;
               // TODO: change to the index of normal
               // if (attrib == 0) {
               //   float norm = sqrt(v0 * v0 + v1 * v1 + v2 * v2);
@@ -1761,18 +1996,18 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
             }
             case 16: {
               // vec4
-              float v0 = VertexMeta->vertex_out[attrib][4 * (*prim)[0]] * u +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[1]] * v +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[2]] * w;
-              float v1 = VertexMeta->vertex_out[attrib][4 * (*prim)[0] + 1] * u +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[1] + 1] * v +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[2] + 1] * w;
-              float v2 = VertexMeta->vertex_out[attrib][4 * (*prim)[0] + 2] * u +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[1] + 2] * v +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[2] + 2] * w;
-              float v3 = VertexMeta->vertex_out[attrib][4 * (*prim)[0] + 3] * u +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[1] + 3] * v +
-                        VertexMeta->vertex_out[attrib][4 * (*prim)[2] + 3] * w;
+              float v0 = VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[0]] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[1]] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[2]] * w;
+              float v1 = VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[0] + 1] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[1] + 1] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[2] + 1] * w;
+              float v2 = VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[0] + 2] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[1] + 2] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[2] + 2] * w;
+              float v3 = VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[0] + 3] * u +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[1] + 3] * v +
+                        VertexMeta->vertex_out.at(attrib_name)[4 * (*prim)[2] + 3] * w;
               vec.push_back(v0);
               vec.push_back(v1);
               vec.push_back(v2);
@@ -1785,11 +2020,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
               assert(0);
             }
           }
-          attribs[attrib].push_back(vec);
-          assert(vec.size() == attribs[attrib][0].size());
+          attribs.at(attrib_name).push_back(vec);
+          assert(vec.size() == attribs.at(attrib_name)[0].size());
         }
-        pixel_map[pixel] = attribs[0].size() - 1;
-        tile_map[tile_id].push_back(attribs[0].size() - 1);
+        tile_map[tile_id].push_back(attribs.at(pos_id).size() - 1);
         FBO->thread_info_pixel.push_back(pixel);
         FBO->depthout[pixel] = depth;
       }
@@ -1800,18 +2034,22 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
 
   if (!SKIP_FS) {
   // copy vertex data to gpu
+  VertexMeta->vertex_out_count.clear();
+  VertexMeta->vertex_out_size.clear();
+  for (auto attrib : VertexMeta->vertex_id_map) {
+    std::string attrib_name = attrib.second;
 
-  for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
-    free(VertexMeta->vertex_out[attrib]);
+    unsigned stride = VertexMeta->vertex_out_stride.at(attrib_name);
+    VertexMeta->vertex_out_count[attrib_name] =
+        attribs.at(attrib_name).size() * attribs.at(attrib_name)[0].size();
+    assert(VertexMeta->vertex_out_stride.at(attrib_name) ==
+           attribs.at(attrib_name)[0].size() * sizeof(float));
+    VertexMeta->vertex_out_size[attrib_name] = attribs.at(attrib_name).size() *
+                                               attribs.at(attrib_name)[0].size() *
+                                               sizeof(float);
 
-    VertexMeta->vertex_out_count[attrib] =
-        attribs[attrib].size() * attribs[attrib][0].size();
-    VertexMeta->vertex_out_stride[attrib] =
-        attribs[attrib][0].size() * sizeof(float);
-    VertexMeta->vertex_out_size[attrib] =
-        attribs[attrib].size() * attribs[attrib][0].size() * sizeof(float);
-
-    VertexMeta->vertex_out[attrib] = new float[VertexMeta->vertex_out_count[attrib]];
+    free(VertexMeta->vertex_out.at(attrib_name));
+    VertexMeta->vertex_out[attrib_name] = new float[VertexMeta->vertex_out_count.at(attrib_name)];
   }
 
   std::vector<unsigned> pixel_index = FBO->thread_info_pixel;
@@ -1822,11 +2060,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
   for (unsigned tile = 0; tile < tile_map.size(); tile++) {
     for (unsigned frag = 0; frag < tile_map[tile].size(); frag++) {
       unsigned i = tile_map[tile][frag];
-      for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
-        for (unsigned j = 0; j < attribs[attrib][i].size(); j++) {
-          VertexMeta
-              ->vertex_out[attrib][index * attribs[attrib][i].size() + j] =
-              attribs[attrib][i][j];
+      for (auto attrib : VertexMeta->vertex_id_map) {
+        std::string attrib_name = attrib.second;
+        for (unsigned j = 0; j < attribs.at(attrib_name)[i].size(); j++) {
+            VertexMeta->vertex_out.at(attrib_name)
+                                  [index * attribs.at(attrib_name)[i].size() + j] =
+                attribs.at(attrib_name)[i][j];
         }
       }
       // store where the pixel is in the vector
@@ -1836,58 +2075,61 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
     }
   }
   assert(pixel_index.size() == FBO->thread_info_pixel.size());
+  // std::string tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR2_xy");
+  std::string tex_id = "UNDEFINED";
   for (unsigned i = 0; i < FBO->thread_info_pixel.size(); i ++) {
-    
-    // calcualte LOD of each pixel
-    unsigned pixel = FBO->thread_info_pixel[i];
-    unsigned x = pixel % FBO->width;
-    unsigned y = pixel / FBO->width;
-    // determine which pixel to get within the 2x2 quad
-    int x_offset = 0;
-    int y_offset = 0;
-    x % 2 == 0? x_offset = 1 : x_offset = -1;
-    y % 2 == 0? y_offset = 1 : y_offset = -1;
-    // make sure the offset is within the image
-    if (x + x_offset > FBO->width - 1 || x + x_offset < 0) {
-      x_offset = 0;
-    }
-    if (y + y_offset > FBO->height - 1 || y + y_offset < 0) {
-      y_offset = 0;
-    }
+    float lod = 0;
+    if (tex_id.find("UNDEFINED") == std::string::npos) {
+      // calcualte LOD of each pixel
+      unsigned pixel = FBO->thread_info_pixel[i];
+      unsigned x = pixel % FBO->width;
+      unsigned y = pixel / FBO->width;
+      // determine which pixel to get within the 2x2 quad
+      int x_offset = 0;
+      int y_offset = 0;
+      x % 2 == 0 ? x_offset = 1 : x_offset = -1;
+      y % 2 == 0 ? y_offset = 1 : y_offset = -1;
+      // make sure the offset is within the image
+      if (x + x_offset > FBO->width - 1 || x + x_offset < 0) {
+        x_offset = 0;
+      }
+      if (y + y_offset > FBO->height - 1 || y + y_offset < 0) {
+        y_offset = 0;
+      }
 
-    unsigned next_x = pixel + x_offset;
-    unsigned next_y = pixel + y_offset * FBO->width;
-    // real gpu always use 2x2 quad, but we don't do that here.
-    // next pixel may not been drawn
-    // need to make sure the next pixel is rendered
-    float ddx, ddy;
-    float u = VertexMeta->vertex_out[tex_index][i * 2];
-    float v = VertexMeta->vertex_out[tex_index][i * 2 + 1];
-    auto xx = pixel_map.find(next_x);
-    if (xx != pixel_map.end()) {
-      unsigned thread_id = pixel_map[next_x];
-      float dudx = (VertexMeta->vertex_out[tex_index][thread_id * 2]) - u;
-      float dvdx = (VertexMeta->vertex_out[tex_index][thread_id * 2 + 1]) - v;
-      ddx = std::min(sqrt(dudx * dudx + dvdx * dvdx) ,1.0f);
-    } else {
-      ddx = 1.0f / texture_width;
+      unsigned next_x = pixel + x_offset;
+      unsigned next_y = pixel + y_offset * FBO->width;
+      // real gpu always use 2x2 quad, but we don't do that here.
+      // next pixel may not been drawn
+      // need to make sure the next pixel is rendered
+      float ddx, ddy;
+      float u = VertexMeta->vertex_out.at(tex_id)[i * 2];
+      float v = VertexMeta->vertex_out.at(tex_id)[i * 2 + 1];
+      auto xx = pixel_map.find(next_x);
+      if (xx != pixel_map.end()) {
+        unsigned thread_id = pixel_map[next_x];
+        float dudx = (VertexMeta->vertex_out.at(tex_id)[thread_id * 2]) - u;
+        float dvdx = (VertexMeta->vertex_out.at(tex_id)[thread_id * 2 + 1]) - v;
+        ddx = std::min(sqrt(dudx * dudx + dvdx * dvdx), 1.0f);
+      } else {
+        ddx = 1.0f / texture_width;
+      }
+      auto yy = pixel_map.find(next_y);
+      if (yy != pixel_map.end()) {
+        unsigned thread_id = pixel_map[next_y];
+        float dudy = (VertexMeta->vertex_out.at(tex_id)[thread_id * 2]) - u;
+        float dvdy = (VertexMeta->vertex_out.at(tex_id)[thread_id * 2 + 1]) - v;
+        ddy = std::min(sqrt(dudy * dudy + dvdy * dvdy), 1.0f);
+      } else {
+        ddy = 1.0f / texture_height;
+      }
+      lod = log2(std::max(ddx * texture_width, ddy * texture_height));
+      // assert(!signbit(lod));
+      lod = std::max(lod, (float)0);
+      assert(!isnan(lod));
     }
-    auto yy = pixel_map.find(next_y);
-    if (yy != pixel_map.end()) {
-      unsigned thread_id = pixel_map[next_y];
-      float dudy = (VertexMeta->vertex_out[tex_index][thread_id * 2]) - u;
-      float dvdy = (VertexMeta->vertex_out[tex_index][thread_id * 2 + 1]) - v;
-      ddy = std::min(sqrt(dudy * dudy + dvdy * dvdy) ,1.0f);
-    } else {
-      ddy = 1.0f / texture_height;
-    }
-    float lod = log2(std::max(ddx * texture_width, ddy * texture_height));
-    // assert(!signbit(lod));
-    lod = std::max(lod, (float)0);
-    assert(!isnan(lod));
     FBO->thread_info_lod.push_back(lod);
     
-    // FBO->thread_info_lod.push_back(0);
   }
 
 //   for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
@@ -1899,23 +2141,63 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
 //     }
 //   }
 
-  for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
-    VertexMeta->vertex_out_devptr[attrib] =
+  for (auto attrib : VertexMeta->vertex_id_map) {
+    std::string attrib_name = attrib.second;
+    VertexMeta->vertex_out_devptr.at(attrib_name) =
         context->get_device()->get_gpgpu()->gpu_malloc(
-            VertexMeta->vertex_out_size[attrib]);
+            VertexMeta->vertex_out_size.at(attrib_name));
     context->get_device()->get_gpgpu()->memcpy_to_gpu(
-        VertexMeta->vertex_out_devptr[attrib], VertexMeta->vertex_out[attrib],
-        VertexMeta->vertex_out_size[attrib]);
-    print_memcpy("MemcpyVulkan", VertexMeta->vertex_out_devptr[attrib],
-                 VertexMeta->vertex_out_size[attrib],
-                 VertexMeta->vertex_out_stride[attrib] * block_size);
+        VertexMeta->vertex_out_devptr.at(attrib_name),
+        VertexMeta->vertex_out.at(attrib_name),
+        VertexMeta->vertex_out_size.at(attrib_name));
+    print_memcpy("MemcpyVulkan", VertexMeta->vertex_out_devptr.at(attrib_name),
+                 VertexMeta->vertex_out_size.at(attrib_name),
+                 VertexMeta->vertex_out_stride.at(attrib_name) * block_size);
   }
 
-  dump_texture(VulkanRayTracing::descriptorSet);
-  // set push constants
-  if (app_id == PBRBASIC) {
-    print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 1024, 0);
+//   for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+//     for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+//       dump_texture(i, j, VertexMeta->decoded_descriptors[i][j]);
+//     }
+//   }
+
+  for (unsigned i = 0; i < 8; i++) {
+    if (VertexMeta->descriptor_set[i] == NULL) {
+      continue;
+    }
+    dump_texture(VertexMeta->descriptor_set[i], i);
   }
+  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+  //     if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
+  //       continue;
+  //     }
+  //     u_int32_t *devPtr;
+  //     u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
+  //     void *address = VertexMeta->decoded_descriptors[i][j].addr;
+  //     // gpgpu_context *ctx = GPGPU_Context();
+  //     // CUctx_st *context = GPGPUSim_Context(ctx);
+  //     devPtr =
+  //         context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+  //     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
+  //                                                       size * sizeof(float));
+  //     // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+  //     // print_memcpy("MemcpyVulkan",devPtr, size, 0);
+  //     if (VertexMeta->decoded_descriptors[i][j].is_texture) {
+  //       launcher_descriptorSets[i][j] = address;
+  //       launcher_deviceDescriptorSets[i][j] = address;
+  //       ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
+  //           devPtr;
+  //       ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
+  //           ->deviceAddress = devPtr;
+  //       print_memcpy("dumpTextures", devPtr, size, 0);
+        
+  //     }
+  //   }
+  // }
+
+  // set push constants
+  print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 1024, 0);
   
 
   // pixel shaders
@@ -1980,13 +2262,18 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned ins
   printf("Drawcall #%u Done\n", draw);
 
   draw++;
-  for (unsigned attrib = 0; attrib < out_attrib_count; attrib++) {
-    delete[] VertexMeta->vertex_out[attrib];
-  }
+//   for (auto attrib : VertexMeta->vertex_out) {
+//     delete[] VertexMeta->vertex_out[attrib.first];
+//   }
+//   delete(VertexMeta->push_constants);
   delete(VertexMeta);
+  // delete(FBO->fbo);
+  // delete(FBO->depthout);
   
-  VertexMeta = new struct vertex_metadata();
-  context->get_device()->get_gpgpu()->ignore_addr.clear();
+  VertexMeta = NULL;
+  draw_meta.pop_front();
+  context->get_device()->get_gpgpu()->identifier_addr.clear();
+  }
   
 }
 
@@ -2001,63 +2288,95 @@ void VulkanRayTracing::read_binary_file(std::string path, void* ptr, unsigned si
 }
 
 void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr, VkIndexType type) {
-  VertexMeta->index_buffer = ptr;
-  VertexMeta->index_type = type;
+//   printf("Saving index buffer %p\n", ptr);
+  VulkanRayTracing::index_buffer = ptr;
+  VulkanRayTracing::index_type = type;
 }
 
 uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
                                          uint32_t tid) {
   // instancing (multiple vertex attributes in one vertex buffer)
-  if (app_id == INSTANCING && draw == 1) {
-    float *base = 0x0;
-    if (buffer_index < 3) {
-      unsigned real_id = tid % VertexMeta->vb.size();
-      base = (float *)VertexMeta->vertex_addr[0] +
-             VertexMeta->vb[real_id] * VertexMeta->vertex_stride[0] / 4;
-    } else {
-      unsigned instance = tid / VertexMeta->vb.size();
-      base = (float *)VertexMeta->vertex_addr[1] +
-             instance * VertexMeta->vertex_stride[1] / 4;
-    }
-    if (tid >= thread_count) {
-      return 0;
-    }
-    return base + (attrib_stride[buffer_index] / 4);
-  } else if (app_id == INSTANCING && draw == 0 || app_id == PBRBASIC ||
-             app_id == PBRTEXTURE) {
-    unsigned offset = VertexMeta->vb[tid] * VertexMeta->vertex_stride[0] / 4;
-    if (tid >= VulkanRayTracing::thread_count) {
-      return 0;
-    }
-    assert(offset < VertexMeta->vertex_count[0]);
-    return VertexMeta->vertex_addr[0] + offset +
-           (attrib_stride[buffer_index] / 4);
-  }
+  assert(buffer_index < VertexMeta->VertexAttrib->binding.size());
+  assert(buffer_index == VertexMeta->VertexAttrib->location[buffer_index]);
+  unsigned binding = VertexMeta->VertexAttrib->binding[buffer_index];
+  unsigned attrib_stride = VertexMeta->VertexAttrib->offset[buffer_index];
 
-  // render_passes (single vertex attribute)
-  else if (app_id == RENDER_PASSES) {
-    unsigned offset =
-        VertexMeta->vb[tid] * VertexMeta->vertex_stride[buffer_index] / 4;
-    if (tid >= VulkanRayTracing::thread_count) {
-      // out of range
-      return 0;
-    }
-    assert(offset < VertexMeta->vertex_count[buffer_index]);
-    return VertexMeta->vertex_addr[buffer_index] + offset;
-  } else {
-    assert(0);
-  }
-}
-
-uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
-                                            uint32_t tid) {
-  unsigned offset = (tid) * VertexMeta->vertex_out_stride[buffer_index] / 4;
+  unsigned instance = tid / VertexMeta->vb.size();
+  unsigned index = tid % VertexMeta->vb.size();
   if (tid >= VulkanRayTracing::thread_count) {
     // out of range
     return 0;
   }
-  assert(offset < VertexMeta->vertex_out_count[buffer_index]);
-  return VertexMeta->vertex_out_devptr[buffer_index] + offset;
+  unsigned offset = 0;
+  if (VertexMeta->VertexAttrib->rate[binding] == VK_VERTEX_INPUT_RATE_VERTEX) {
+    offset = VertexMeta->vb[index] * VertexMeta->vertex_stride[binding] / 4;
+    assert(offset < VertexMeta->vertex_count[binding] * VertexMeta->InstanceCount);
+  } else if (VertexMeta->VertexAttrib->rate[binding] == VK_VERTEX_INPUT_RATE_INSTANCE) {
+    offset = instance * VertexMeta->vertex_stride[binding] / 4;
+    assert(offset < VertexMeta->vertex_count[binding]);
+  }
+  return VertexMeta->vertex_addr[binding] + offset + attrib_stride / 4;
+  //   if (app_id == INSTANCING && draw == 1) {
+  //     float *base = 0x0;
+  //     if (buffer_index < 3) {
+  //       unsigned real_id = tid % VertexMeta->vb.size();
+  //       base = (float *)VertexMeta->vertex_addr[0] +
+  //              VertexMeta->vb[real_id] * VertexMeta->vertex_stride[0] / 4;
+  //     } else {
+  //       unsigned instance = tid / VertexMeta->vb.size();
+  //       base = (float *)VertexMeta->vertex_addr[1] +
+  //              instance * VertexMeta->vertex_stride[1] / 4;
+  //     }
+  //     if (tid >= thread_count) {
+  //       return 0;
+  //     }
+  //     return base + (attrib_stride[buffer_index] / 4);
+  //   } else if (app_id == INSTANCING && draw == 0 || app_id == PBRBASIC ||
+  //              app_id == PBRTEXTURE) {
+  //     unsigned offset = VertexMeta->vb[tid] * VertexMeta->vertex_stride[0] /
+  //     4; if (tid >= VulkanRayTracing::thread_count) {
+  //       return 0;
+  //     }
+  //     assert(offset < VertexMeta->vertex_count[0]);
+  //     return VertexMeta->vertex_addr[0] + offset +
+  //            (attrib_stride[buffer_index] / 4);
+  //   }
+
+  //   // render_passes (single vertex attribute)
+  //   else if (app_id == RENDER_PASSES) {
+  //     unsigned offset =
+  //         VertexMeta->vb[tid] * VertexMeta->vertex_stride[buffer_index] / 4;
+  //     if (tid >= VulkanRayTracing::thread_count) {
+  //       // out of range
+  //       return 0;
+  //     }
+  //     assert(offset < VertexMeta->vertex_count[buffer_index]);
+  //     return VertexMeta->vertex_addr[buffer_index] + offset;
+  //   } else {
+  //     assert(0);
+  //   }
+}
+
+// uint64_t VulkanRayTracing::getVertexOutAddr(uint32_t buffer_index,
+//                                             uint32_t tid) {
+//   unsigned offset = (tid) * VertexMeta->vertex_out_stride[buffer_index] / 4;
+//   if (tid >= VulkanRayTracing::thread_count) {
+//     // out of range
+//     return 0;
+//   }
+//   assert(offset < VertexMeta->vertex_out_count[buffer_index]);
+//   return VertexMeta->vertex_out_devptr[buffer_index] + offset;
+// }
+
+uint64_t VulkanRayTracing::getVertexOutAddr(std::string identifier,
+                                            uint32_t tid) {
+  unsigned offset = (tid) * VertexMeta->vertex_out_stride.at(identifier) / 4;
+  if (tid >= VulkanRayTracing::thread_count) {
+    // out of range
+    return 0;
+  }
+//   assert(offset < VertexMeta->vertex_out_count[buffer_index]);
+  return VertexMeta->vertex_out_devptr.at(identifier) + offset;
 }
 
 uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
@@ -2069,11 +2388,25 @@ uint64_t VulkanRayTracing::getFBOAddr(uint32_t offset) {
   return FBO->fbo_dev + FBO->thread_info_pixel[offset] * 4;
 }
 
+void VulkanRayTracing::getFragCoord(uint32_t thread_id, uint32_t &x,
+                                    uint32_t &y) {
+  // get pixel coord
+  if ((thread_id) >= VulkanRayTracing::thread_count) {
+    return 0;
+  }
+
+  x = FBO->thread_info_pixel[thread_id] % FBO->width;
+  y = FBO->thread_info_pixel[thread_id] / FBO->width;
+}
+
 uint64_t VulkanRayTracing::getConst() {
     return VertexMeta->constants_dev_addr;
 }
 
 float VulkanRayTracing::getTexLOD(unsigned thread_id) {
+  if (thread_id > VulkanRayTracing::thread_count) {
+    return 0;
+  }
     return FBO->thread_info_lod[thread_id];
 }
 
@@ -2094,7 +2427,8 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     // Dump Descriptor Sets
     if (!use_external_launcher) 
     {
-        dump_descriptor_sets(VulkanRayTracing::descriptorSet, true);
+      assert(0);
+        // dump_descriptor_sets(VulkanRayTracing::descriptorSet, true);
         dump_callparams_and_sbt(raygen_sbt, miss_sbt, hit_sbt, callable_sbt, is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
     }
 
@@ -2436,77 +2770,78 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
     if (true)
     // if (use_external_launcher)
     {
+        assert(launcher_deviceDescriptorSets[setID][binding] != NULL);
         return launcher_deviceDescriptorSets[setID][binding];
         // return launcher_descriptorSets[setID][binding];
     }
-    else 
-    {
-        // assert(setID < descriptors.size());
-        // assert(binding < descriptors[setID].size());
+    // else 
+    // {
+    //     // assert(setID < descriptors.size());
+    //     // assert(binding < descriptors[setID].size());
 
-        struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
+    //     struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
 
-        const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[binding];
-        struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
-        void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+    //     const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[binding];
+    //     struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
+    //     void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
 
-        assert(desc->type == bind_layout->type);
+    //     assert(desc->type == bind_layout->type);
 
-        switch (desc->type)
-        {
-            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-            {
-                return (void *)(desc);
-            }
-            case VK_DESCRIPTOR_TYPE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-            {
-                return desc;
-            }
+    //     switch (desc->type)
+    //     {
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+    //         {
+    //             return (void *)(desc);
+    //         }
+    //         case VK_DESCRIPTOR_TYPE_SAMPLER:
+    //         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+    //         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+    //         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+    //         {
+    //             return desc;
+    //         }
 
-            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                assert(0);
-                break;
+    //         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+    //             assert(0);
+    //             break;
 
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-            {
-                if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
-                    desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
-                {
-                    // MRS_TODO: account for desc->offset?
-                    return anv_address_map(desc->buffer->address);
-                }
-                else
-                {
-                    struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
-                    return anv_address_map(bview->address);
-                }
-            }
+    //         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+    //         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+    //         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+    //         {
+    //             if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+    //                 desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+    //             {
+    //                 // MRS_TODO: account for desc->offset?
+    //                 return anv_address_map(desc->buffer->address);
+    //             }
+    //             else
+    //             {
+    //                 struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
+    //                 return anv_address_map(bview->address);
+    //             }
+    //         }
 
-            case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
-                assert(0);
-                break;
+    //         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
+    //             assert(0);
+    //             break;
 
-            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
-            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
-            {
-                struct anv_address_range_descriptor *desc_data = desc_map;
-                return (void *)(desc_data->address);
-            }
+    //         case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+    //         case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+    //         {
+    //             struct anv_address_range_descriptor *desc_data = desc_map;
+    //             return (void *)(desc_data->address);
+    //         }
 
-            default:
-                assert(0);
-                break;
-        }
+    //         default:
+    //             assert(0);
+    //             break;
+    //     }
 
-        // return descriptors[setID][binding].address;
-    }
+    //     // return descriptors[setID][binding].address;
+    // }
 }
 
 void VulkanRayTracing::getTexture(struct anv_descriptor *desc, 
@@ -2699,13 +3034,13 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
 
     float* address = anv_address_map(vbuffer->address);
     unsigned size = vbuffer->size;
-    unsigned stride = pipeline->vb[setID].stride;
-    unsigned attrib_per_vertex = stride /4;
+    // unsigned stride = pipeline->vb[setID].stride;
+    // unsigned attrib_per_vertex = stride /4;
     assert(size % 4 == 0);
     // Data to dump
-    FILE *fp,*mp;
-    char *mesa_root = getenv("MESA_ROOT");
-    char *filePath = "gpgpusimShaders/";
+    // FILE *fp,*mp;
+    // char *mesa_root = getenv("MESA_ROOT");
+    // char *filePath = "gpgpusimShaders/";
     // char *extension = ".vkvertexbuffer";
 
     // Vertex data
@@ -2713,16 +3048,16 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     // vertex (after indexing) or perform vertex batching on loaded vertex data.
     // Right here it's saving raw vertex buffer from Mesa3D
     // i.e. currently it can only be launched directly from Mesa3D.
-    char fullPath[200];
-    char metaPath[200];
-    snprintf(fullPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexdata", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
-    snprintf(metaPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexmeta", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
-    fp = fopen(fullPath, "wb+");
-    mp = fopen(metaPath, "w+");
-    fwrite(address, 1, size, fp);
-    fclose(fp);
-    fprintf(mp,"%u",pipeline->vb[setID].stride);
-    fclose(mp);
+    // char fullPath[200];
+    // char metaPath[200];
+    // snprintf(fullPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexdata", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
+    // snprintf(metaPath, sizeof(fullPath), "%s%s_%d_%d_%d.vkvertexmeta", mesa_root, filePath, setID, size, VertexMeta->vertex_stride[setID]);
+    // fp = fopen(fullPath, "wb+");
+    // mp = fopen(metaPath, "w+");
+    // fwrite(address, 1, size, fp);
+    // fclose(fp);
+    // fprintf(mp,"%u",pipeline->vb[setID].stride);
+    // fclose(mp);
 
     u_int32_t *devPtr;
     gpgpu_context *ctx = GPGPU_Context();
@@ -2730,10 +3065,10 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
     VertexMeta->vertex_addr[setID] = devPtr;
-    VertexMeta->vertex_size[setID] = size;
-    VertexMeta->vertex_count[setID] = size / 4;
+    // VertexMeta->vertex_size[setID] = size;
+    // VertexMeta->vertex_count[setID] = size / 4;
     // TODO: multiple by CTA size here. Should printer byte / CTA
-    print_memcpy("MemcpyVulkan",devPtr, VertexMeta->vertex_size[setID], stride);
+    print_memcpy("MemcpyVulkan",devPtr, VertexMeta->vertex_size[setID], VertexMeta->vertex_stride[setID]);
     // context->get_device()->get_gpgpu()->gtrace
     //     << "MemcpyHtoD," << std::hex << devPtr << "," << std::dec
     //     << VertexMeta->vertex_size[setID] << std::endl;
@@ -2845,12 +3180,16 @@ void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID,
                                                  image->planes[0].surface.isl.row_pitch_B,
                                                  filter);
     fclose(fp);
+    // VertexMeta->decoded_descriptors[setID][descID].addr = address;
+    // VertexMeta->decoded_descriptors[setID][descID].size = size;
+    
+
     u_int32_t *devPtr;
     gpgpu_context *ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
     devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
-    // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+
     setTextureFromLauncher(address, devPtr, setID, descID, size,
                            image_extent_width, image_extent_height, format,
                            VkDescriptorTypeNum, image->n_planes, image->samples,
@@ -3092,13 +3431,9 @@ void VulkanRayTracing::dump_descriptor_set(uint32_t setID, uint32_t descID, void
     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
     setDescriptorSetFromLauncher(address,devPtr,setID,descID);
     print_memcpy("MemcpyVulkan",devPtr, size, 0);
-    // context->get_device()->get_gpgpu()->gtrace
-    //     << "MemcpyHtoD," << std::hex
-    //     << devPtr << "," << std::dec
-    //     << size << std::endl;
 }
 
-void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set) {
+void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set, unsigned set_index) {
   for (int i = 0; i < set->descriptor_count; i++) {
       if (VulkanRayTracing::app_id == RENDER_PASSES ||
           VulkanRayTracing::app_id == INSTANCING) {
@@ -3106,7 +3441,7 @@ void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set) {
               i = 4;
           }
       }
-      struct anv_descriptor_set *set = VulkanRayTracing::descriptorSet;
+      // struct anv_descriptor_set *set = VulkanRayTracing::descriptorSet[set_index];
 
       const struct anv_descriptor_set_binding_layout *bind_layout =
           &set->layout->binding[i];
@@ -3114,6 +3449,9 @@ void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set) {
           &set->descriptors[bind_layout->descriptor_index];
       void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
 
+      if (bind_layout->type == (unsigned) -1) {
+        continue;
+      }
       assert(desc->type == bind_layout->type);
 
       switch (desc->type) {
@@ -3121,59 +3459,56 @@ void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set) {
           case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
           case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
           case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
-              dumpTextures(desc, 0, i, i, desc->type);
+              dumpTextures(desc, set_index, i, i, desc->type);
               break;
           }
       }
   }
 }
-void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture)
-{
-  for (int i = 0; i < set->descriptor_count; i++) {
-    if (VulkanRayTracing::app_id == RENDER_PASSES ||
-        VulkanRayTracing::app_id == INSTANCING) {
-      if (i == 2) {
-        i = 4;
-        // for some reason raytracing_extended skipped binding = 3
-        // and somehow they have 34 descriptor sets but only 10 are used
-        // so we just skip those
-        // continue;
-      }
+
+void VulkanRayTracing::dump_texture(unsigned set_index, unsigned desc_index,  struct anv_descriptor *desc) {
+  switch (desc->type) {
+    case VK_DESCRIPTOR_TYPE_SAMPLER:
+    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
+      dumpTextures(desc, set_index, desc_index, desc_index, desc->type);
+      break;
     }
+  }
+}
 
-    struct anv_descriptor_set *set = VulkanRayTracing::descriptorSet;
-
-    const struct anv_descriptor_set_binding_layout *bind_layout =
-        &set->layout->binding[i];
-    struct anv_descriptor *desc =
-        &set->descriptors[bind_layout->descriptor_index];
-    void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
-
-    assert(desc->type == bind_layout->type);
-
-    switch (desc->type) {
+void VulkanRayTracing::dump_descriptor(unsigned set_index, unsigned desc_index,  struct anv_descriptor *desc, struct anv_buffer_view *bview, bool dump_texture) {
+  if (!desc) {
+    return;
+  }
+  switch (desc->type) {
       case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
         // return (void *)(desc);
-        dumpStorageImage(desc, 0, i, desc->type);
+        dumpStorageImage(desc, 0, desc_index, desc->type);
         break;
       }
       case VK_DESCRIPTOR_TYPE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
       case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
-        // return desc;
+        anv_descriptor *desc_offset = ((
+            anv_descriptor *)((void *)desc));  // offset for raytracing_extended
+        if (!desc_offset->image_view || !desc_offset->image_view->image) {
+          break;
+        }
         if (dump_texture) {
-                    dumpTextures(desc, 0, i, i, desc->type);
-                } else {
-                    anv_descriptor *desc_offset = ((anv_descriptor *)((
-                        void *)desc));  // offset for raytracing_extended
-                    struct anv_image_view *image_view = desc_offset->image_view;
-                    const struct anv_image *image = image_view->image;
-                    texture_width = image->extent.width;
-                    texture_height = image->extent.height;
-                }
-                break;
-            }
+          dumpTextures(desc, set_index, desc_index, desc_index, desc->type);
+        } else {
+        // anv_descriptor *desc_offset = ((
+        //     anv_descriptor *)((void *)desc));  // offset for raytracing_extended
+        struct anv_image_view *image_view = desc_offset->image_view;
+        const struct anv_image *image = image_view->image;
+        texture_width = image->extent.width;
+        texture_height = image->extent.height;
+        }
+        break;
+      }
 
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
             case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
@@ -3190,14 +3525,184 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool
                 {
                     // MRS_TODO: account for desc->offset?
                     //return anv_address_map(desc->buffer->address);
-                    dump_descriptor_set(0, i, anv_address_map(desc->buffer->address), set->descriptors[bind_layout->descriptor_index].buffer->size, set->descriptors[bind_layout->descriptor_index].type);
+                    dump_descriptor_set(set_index, desc_index, anv_address_map(desc->buffer->address), desc->buffer->size, desc->type);
+                    break;
+                }
+                else
+                {
+                    //return anv_address_map(bview->address);
+                    dump_descriptor_set(set_index, desc_index, anv_address_map(bview->address), bview->range, desc->type);
+                    break;
+                }
+            }
+
+            case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
+                assert(0);
+                break;
+
+            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+            {
+              assert(0);
+                // struct anv_address_range_descriptor *desc_data = desc_map;
+                //return (void *)(desc_data->address);
+                //dump_descriptor_set_for_AS(0, i, (void *)(desc_data->address), desc_data->range, set->descriptors[i].type, 1024*1024*10, 1024*1024*10, true);
+                break;
+            }
+
+            default:
+                // assert(0);
+                break;
+        }
+
+}
+
+bool VulkanRayTracing::check_descriptor_sets(struct anv_descriptor_set *set, unsigned set_index) {
+  for (int i = 0; i < set->layout->binding_count; i++) {
+    const struct anv_descriptor_set_binding_layout *bind_layout =
+        &set->layout->binding[i];
+    struct anv_descriptor *desc =
+        &set->descriptors[bind_layout->descriptor_index];
+    void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+
+    if (bind_layout->type == (unsigned) -1) {
+        continue;
+    }
+
+    switch (desc->type) {
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+        return true;
+      }
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
+          anv_descriptor *desc_offset = ((anv_descriptor *)((
+              void *)desc));  // offset for raytracing_extended
+          // if (desc_offset->image_view == NULL) {
+          //   return false;
+          // }
+            return true;
+      }
+
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+        assert(0);
+        break;
+
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
+        if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+            desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) {
+          return true;
+        } else {
+          struct anv_buffer_view *bview =
+              &set->buffer_views[bind_layout->buffer_view_index];
+          if (!bview) {
+            return false;
+          }
+          return true;
+        }
+      }
+
+      case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
+        assert(0);
+        break;
+
+      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV: {
+        break;
+      }
+
+      default:
+        return false;
+        break;
+    }
+  }
+}
+
+void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool dump_texture, unsigned set_index)
+{
+  for (int i = 0; i < set->layout->binding_count; i++) {
+    if (VulkanRayTracing::app_id == RENDER_PASSES ||
+        VulkanRayTracing::app_id == INSTANCING) {
+      if (i == 2) {
+        i = 4;
+        // for some reason raytracing_extended skipped binding = 3
+        // and somehow they have 34 descriptor sets but only 10 are used
+        // so we just skip those
+        // continue;
+      }
+    }
+
+    // struct anv_descriptor_set *set = VulkanRayTracing::descriptorSet[set_index];
+
+    const struct anv_descriptor_set_binding_layout *bind_layout =
+        &set->layout->binding[i];
+    struct anv_descriptor *desc =
+        &set->descriptors[bind_layout->descriptor_index];
+    void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+
+    // if (bind_layout->type > (unsigned)VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+    //     continue;
+    // }
+    if (bind_layout->type == (unsigned) -1) {
+        continue;
+    }
+    // assert(desc->type == bind_layout->type);
+
+    switch (desc->type) {
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+        // return (void *)(desc);
+        dumpStorageImage(desc, 0, i, desc->type);
+        break;
+      }
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
+        // return desc;
+        if (dump_texture) {
+          dumpTextures(desc, set_index, i, i, desc->type);
+        } else {
+        anv_descriptor *desc_offset = ((
+            anv_descriptor *)((void *)desc));  // offset for raytracing_extended
+        if (desc_offset->image_view == NULL) {
+            continue;
+        }
+        struct anv_image_view *image_view = desc_offset->image_view;
+        const struct anv_image *image = image_view->image;
+        texture_width = image->extent.width;
+        texture_height = image->extent.height;
+        }
+        break;
+      }
+
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                assert(0);
+                break;
+
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+            {
+                if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+                    desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+                {
+                    // MRS_TODO: account for desc->offset?
+                    //return anv_address_map(desc->buffer->address);
+                    dump_descriptor_set(set_index, i, anv_address_map(desc->buffer->address), set->descriptors[bind_layout->descriptor_index].buffer->size, set->descriptors[bind_layout->descriptor_index].type);
                     break;
                 }
                 else
                 {
                     struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
                     //return anv_address_map(bview->address);
-                    dump_descriptor_set(0, i, anv_address_map(bview->address), bview->range, set->descriptors[bind_layout->descriptor_index].type);
+                    dump_descriptor_set(set_index, i, anv_address_map(bview->address), bview->range, set->descriptors[bind_layout->descriptor_index].type);
                     break;
                 }
             }
@@ -3233,8 +3738,8 @@ void VulkanRayTracing::dump_AS(struct anv_descriptor_set *set, VkAccelerationStr
     //         // so we just skip those
     //         continue;
     //    }
-
-        struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
+    assert(0);
+        // struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
 
         const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[i];
         struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
@@ -3375,6 +3880,9 @@ void VulkanRayTracing::setTextureFromLauncher(void *address,
     texture->deviceAddress = deviceAddress;
     texture->mip_level = mip_level;
 
+    // VertexMeta->decoded_descriptors[setID][descID].is_texture = true;
+    // VertexMeta->decoded_descriptors[setID][descID].addr = (void*) texture;
+    // VertexMeta->decoded_descriptors[setID][descID].size = size;
     launcher_descriptorSets[setID][descID] = (void*) texture;
     launcher_deviceDescriptorSets[setID][descID] = (void*) texture;
 }
@@ -3436,9 +3944,9 @@ void* VulkanRayTracing::gpgpusim_alloc(uint32_t size)
     gpgpu_context *ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
     void* devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
-    for (unsigned i = 0; i < size / 4; i ++) {
-        context->get_device()->get_gpgpu()->ignore_addr[(unsigned long) devPtr + i * 4] = true;
-    }
+    // for (unsigned i = 0; i < size / 4; i ++) {
+    //     context->get_device()->get_gpgpu()->ignore_addr[(unsigned long) devPtr + i * 4] = true;
+    // }
     if (g_debug_execution >= 3) {
         printf("GPGPU-Sim PTX: gpgpusim_allocing %zu bytes starting at 0x%llx..\n",
             size, (unsigned long long)devPtr);
@@ -3446,4 +3954,37 @@ void* VulkanRayTracing::gpgpusim_alloc(uint32_t size)
     }
     assert(devPtr);
     return devPtr;
+}
+
+void VulkanRayTracing::map_pipeline_shader(void *ptr, unsigned shader_index) {
+    pipeline_shader_map.insert(std::make_pair(ptr, shader_index));
+}
+
+void VulkanRayTracing::map_pipeline_info(void *ptr, VkGraphicsPipelineCreateInfo *pCreateinfo) {
+    struct VertexAttrib *vertexAttrib = new struct VertexAttrib;
+    unsigned save = false;
+    for (unsigned i = 0;
+         i < pCreateinfo->pVertexInputState->vertexAttributeDescriptionCount;
+         i++) {
+        vertexAttrib->location.push_back(
+            pCreateinfo->pVertexInputState->pVertexAttributeDescriptions[i]
+                .location);
+        vertexAttrib->binding.push_back(
+            pCreateinfo->pVertexInputState->pVertexAttributeDescriptions[i]
+                .binding);
+        vertexAttrib->offset.push_back(
+            pCreateinfo->pVertexInputState->pVertexAttributeDescriptions[i]
+                .offset);
+        save = true;
+    }
+    for (unsigned i = 0; i < pCreateinfo->pVertexInputState->vertexBindingDescriptionCount; i++) {
+        assert(pCreateinfo->pVertexInputState->pVertexBindingDescriptions[i]
+                   .binding == i);
+        vertexAttrib->rate.push_back(
+            pCreateinfo->pVertexInputState->pVertexBindingDescriptions[i]
+                .inputRate);
+    }
+    // if (save) {
+    pipeline_vertex_map.insert(std::make_pair(ptr, vertexAttrib));
+    // }
 }

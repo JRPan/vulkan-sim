@@ -316,6 +316,8 @@ void function_info::ptx_assemble() {
       n += pI->inst_size();
       PC += pI->inst_size();
     }
+    assert(m_instructions.front()->source_file_str().compare(
+                     pI->source_file_str()) == 0);
   }
   gpgpu_ctx->func_sim->g_assemble_code_next_pc = PC;
   for (unsigned ii = 0; ii < n;
@@ -576,7 +578,12 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == CALL_OP) || (m_opcode == TRACE_RAY_OP) || (m_opcode == CALL_MISS_SHADER_OP) ||
       (m_opcode == CALL_CLOSEST_HIT_SHADER_OP) || (m_opcode == LD_RAY_LAUNCH_ID_OP) ||
       (m_opcode == LD_RAY_LAUNCH_SIZE_OP) || (m_opcode == LD_VK_DESC_OP) ||
-      (m_opcode == IMG_DEREF_ST_OP) || (m_opcode == RT_ALLOC_MEM_OP) ||
+      (m_opcode == IMG_DEREF_ST_OP) || (m_opcode == RT_ALLOC_MEM_OP) || 
+      (m_opcode == LOAD_FIRST_VERTEX_OP) || 
+      (m_opcode == LOAD_VERTEX_ID_ZERO_BASE_OP) || 
+      (m_opcode == LOAD_BASE_INSTANCE_OP) || 
+      (m_opcode == LOAD_INSTANCE_ID_OP) || 
+      (m_opcode == LOAD_FRAG_COORD_OP) ||
       (m_opcode == DEREF_VAR_OP) || (m_opcode == WRAP_32_4_OP) || (m_opcode == UNWRAP_32_4_OP) ||
       (m_opcode == GET_ELEMENT_32_OP) || (m_opcode == SET_ELEMENT_32_OP) ||
       (m_opcode == LOAD_RAY_WORLD_TO_OBJECT_OP) || (m_opcode == LOAD_RAY_OBJECT_TO_WORLD_OP) ||
@@ -616,7 +623,12 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != CALL_OP) && (m_opcode != TRACE_RAY_OP) && (m_opcode != CALL_MISS_SHADER_OP) &&
       (m_opcode != CALL_CLOSEST_HIT_SHADER_OP) && (m_opcode != LD_RAY_LAUNCH_ID_OP) &&
       (m_opcode != LD_RAY_LAUNCH_SIZE_OP) && (m_opcode != LD_VK_DESC_OP) &&
-      (m_opcode != IMG_DEREF_ST_OP) && (m_opcode != RT_ALLOC_MEM_OP) &&
+      (m_opcode != IMG_DEREF_ST_OP) && (m_opcode != RT_ALLOC_MEM_OP) && 
+      (m_opcode == LOAD_FIRST_VERTEX_OP) &&
+      (m_opcode == LOAD_VERTEX_ID_ZERO_BASE_OP) && 
+      (m_opcode == LOAD_BASE_INSTANCE_OP) && 
+      (m_opcode == LOAD_INSTANCE_ID_OP) && 
+      (m_opcode == LOAD_FRAG_COORD_OP) &&
       (m_opcode != DEREF_VAR_OP) && (m_opcode != WRAP_32_4_OP) && (m_opcode != UNWRAP_32_4_OP) && 
       (m_opcode != GET_ELEMENT_32_OP) && (m_opcode != SET_ELEMENT_32_OP) &&
       (m_opcode != LOAD_RAY_WORLD_TO_OBJECT_OP) && (m_opcode != LOAD_RAY_OBJECT_TO_WORLD_OP) &&
@@ -763,6 +775,9 @@ void ptx_instruction::set_opcode_and_latency() {
          &gpgpu_ctx->func_sim->cdp_latency[3],
          &gpgpu_ctx->func_sim->cdp_latency[4]);
 
+  if (m_opcode == RT_ALLOC_MEM_OP) {
+    m_operands.back().set_type(s_identifier_t);
+  }
   if (!m_operands.empty()) {
     std::vector<operand_info>::iterator it;
     for (it = ++m_operands.begin(); it != m_operands.end(); it++) {
@@ -784,6 +799,12 @@ void ptx_instruction::set_opcode_and_latency() {
       if (has_memory_read()) op = LOAD_OP;
       if (has_memory_write()) op = STORE_OP;
       break;
+    case LOAD_FIRST_VERTEX_OP:
+    case LOAD_VERTEX_ID_ZERO_BASE_OP:
+    case LOAD_BASE_INSTANCE_OP:
+    case LOAD_INSTANCE_ID_OP:
+    case DISCARD_IF_OP:
+    case LOAD_FRAG_COORD_OP:
     case LD_OP:
     case IMG_DEREF_LD_OP:
       op = LOAD_OP;
@@ -855,6 +876,7 @@ void ptx_instruction::set_opcode_and_latency() {
     case ADDC_OP:
     case SUB_OP:
     case SUBC_OP:
+    case EXTRACT_U8_OP:
       // ADD,SUB latency
       switch (get_type()) {
         case F32_TYPE:
@@ -982,6 +1004,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case LG2_OP:
     case RSQRT_OP:
     case RCP_OP:
+    case FDDX_OP:
+    case FDDY_OP:
       latency = sfu_latency;
       initiation_interval = sfu_init;
       op = SFU_OP;
@@ -1143,6 +1167,13 @@ void ptx_instruction::pre_decode() {
         cache_op = CACHE_GLOBAL;
       else if (m_opcode == TRACE_RAY_OP)
         cache_op = CACHE_ALL;
+      else if (m_opcode == LOAD_FIRST_VERTEX_OP ||
+               m_opcode == LOAD_VERTEX_ID_ZERO_BASE_OP ||
+               m_opcode == LOAD_BASE_INSTANCE_OP ||
+               m_opcode == LOAD_INSTANCE_ID_OP ||
+               m_opcode == LOAD_FRAG_COORD_OP) {
+        cache_op = CACHE_ALL;
+      }
       break;
   }
 
@@ -1317,7 +1348,7 @@ void ptx_instruction::set_input_output_registers() {
     case RT_ALLOC_MEM_OP:
     case GET_ELEMENT_32_OP:
     case SET_ELEMENT_32_OP:
-      operand_classification = {2, 1, 1};
+      // operand_classification = {2, 1, 1};
       break;
     case WRAP_32_4_OP:
       operand_classification = {2, 1, 1, 1, 1};

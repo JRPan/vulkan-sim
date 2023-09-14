@@ -73,12 +73,19 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
             is_indirect, launch_width, launch_height, launch_depth, launch_size_addr);
 }
 
-extern "C" void gpgpusim_vkCmdDraw(struct anv_vertex_binding *vbuffer,
-                                   struct anv_graphics_pipeline *pipeline,
-                                   struct VkViewport *viewports, unsigned instanceCount) {
+extern "C" void gpgpusim_vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCountPerInstance, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex) {
   VulkanRayTracing::invoke_gpgpusim();
-  VulkanRayTracing::vkCmdDraw(vbuffer, pipeline, viewports, instanceCount);
-  // VulkanRayTracing::vkCmdDraw(void *vertex_buffer);
+  VulkanRayTracing::vkCmdDraw(cmd_buffer, VertexCountPerInstance, StartVertex, instanceCount, StartInstance, BaseVertex);
+}
+
+extern "C" void gpgpusim_saveDumbDraw() {
+    VulkanRayTracing::invoke_gpgpusim();
+    VulkanRayTracing::saveDumbDraw();
+}
+
+extern "C" void gpgpusim_saveDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCountPerInstance, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex) {
+  
+  VulkanRayTracing::saveDraw(cmd_buffer, VertexCountPerInstance, StartVertex, instanceCount, StartInstance, BaseVertex);
 }
 
 extern "C" void gpgpusim_saveIndexBuffer(struct anv_buffer *ptr, VkIndexType type) {
@@ -97,9 +104,9 @@ extern void gpgpusim_addTreelets_cpp(VkAccelerationStructureKHR accelerationStru
     VulkanRayTracing::setAccelerationStructure(accelerationStructure);
 }
 
-extern "C" void gpgpusim_setDescriptorSet(struct anv_descriptor_set *set)
+extern "C" void gpgpusim_setDescriptorSet(struct anv_descriptor_set *set, unsigned set_index)
 {
-    VulkanRayTracing::setDescriptorSet(set);
+    VulkanRayTracing::setDescriptorSet(set, set_index);
 }
 
 
@@ -128,7 +135,8 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
 
 extern void gpgpusim_setDescriptorSet_cpp(void *set)
 {
-    VulkanRayTracing::setDescriptorSet((struct anv_descriptor_set*) set);
+    assert(0);
+    // VulkanRayTracing::setDescriptorSet((struct anv_descriptor_set*) set);
 }
 
 extern void gpgpusim_setDescriptorSetFromLauncher_cpp(void *address, void *deviceAddress, uint32_t setID, uint32_t descID)
@@ -176,6 +184,14 @@ extern void gpgpusim_setTextureFromLauncher_cpp(void *address,
 extern "C" void gpgpusim_pass_child_addr(void *address)
 {
     VulkanRayTracing::pass_child_addr(address);
+}
+
+extern "C" void gpgpusim_map_pipeline_shader(void *ptr, unsigned shader_index) {
+    VulkanRayTracing::map_pipeline_shader(ptr, shader_index);
+}
+
+extern "C" void gpgpusim_map_pipeline_info(void *ptr,VkGraphicsPipelineCreateInfo *pCreateInfo) {
+    VulkanRayTracing::map_pipeline_info(ptr, pCreateInfo);
 }
 
 #endif /* GPGPUSIM_CALLS_FROM_MESA_CC */
