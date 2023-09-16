@@ -1418,7 +1418,7 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
     //   VertexMeta->decoded_bview[i][j] = bview;
     // }
 
-    // dump_descriptor_sets(cmd_buffer->state.gfx.base.descriptors[i], true, i);
+    dump_descriptor_sets(cmd_buffer->state.gfx.base.descriptors[i], true, i);
 
     // anv_descriptor_set *set = new anv_descriptor_set();
     // memcpy(set, cmd_buffer->state.gfx.base.descriptors[i], sizeof(anv_descriptor_set));
@@ -1664,45 +1664,41 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   //   }
   // }
 
-  for (unsigned i = 0; i < 8; i++) {
-    if (VertexMeta->descriptor_set[i] == NULL) {
-      continue;
-    }
-    dump_descriptor_sets(VertexMeta->descriptor_set[i], false, i);
-  }
-  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
-  //   // if (VertexMeta->descriptor_set[i] == NULL) {
-  //   //   continue;
-  //   // }
-  //   // dump_descriptor_sets(VertexMeta->descriptor_set[i], false, i);
-  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
-  //     if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
-  //       continue;
-  //     }
-  //     u_int32_t *devPtr;
-  //     u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
-  //     void *address = VertexMeta->decoded_descriptors[i][j].addr;
-  //     // gpgpu_context *ctx = GPGPU_Context();
-  //     // CUctx_st *context = GPGPUSim_Context(ctx);
-  //     devPtr =
-  //         context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
-  //     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
-  //                                                       size * sizeof(float));
-  //     // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
-  //     // print_memcpy("MemcpyVulkan",devPtr, size, 0);
-  //     if (VertexMeta->decoded_descriptors[i][j].is_texture) {
-  //       continue;
-  //       // ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
-  //       //     devPtr;
-  //       // ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
-  //       //     ->deviceAddress = devPtr;
-  //     } else {
-  //       launcher_descriptorSets[i][j] = address;
-  //       launcher_deviceDescriptorSets[i][j] = devPtr;
-  //       print_memcpy("MemcpyVulkan",devPtr, size, 0);
-  //     }
+  // for (unsigned i = 0; i < 8; i++) {
+  //   if (VertexMeta->descriptor_set[i] == NULL) {
+  //     continue;
   //   }
+  //   dump_descriptor_sets(VertexMeta->descriptor_set[i], false, i);
   // }
+  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+    for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+      if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
+        continue;
+      }
+      u_int32_t *devPtr;
+      u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
+      void *address = VertexMeta->decoded_descriptors[i][j].addr;
+      // gpgpu_context *ctx = GPGPU_Context();
+      // CUctx_st *context = GPGPUSim_Context(ctx);
+      devPtr =
+          context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+      context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
+                                                        size * sizeof(float));
+      // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+      // print_memcpy("MemcpyVulkan",devPtr, size, 0);
+      if (VertexMeta->decoded_descriptors[i][j].is_texture) {
+        continue;
+        // ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
+        //     devPtr;
+        // ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
+        //     ->deviceAddress = devPtr;
+      } else {
+        launcher_descriptorSets[i][j] = address;
+        launcher_deviceDescriptorSets[i][j] = devPtr;
+        print_memcpy("MemcpyVulkan",devPtr, size, 0);
+      }
+    }
+  }
 
   // InstanceCount = 20;
   thread_count = VertexMeta->vb.size() * VertexMeta->InstanceCount;
@@ -2161,40 +2157,40 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
 //     }
 //   }
 
-  for (unsigned i = 0; i < 8; i++) {
-    if (VertexMeta->descriptor_set[i] == NULL) {
-      continue;
-    }
-    dump_texture(VertexMeta->descriptor_set[i], i);
-  }
-  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
-  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
-  //     if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
-  //       continue;
-  //     }
-  //     u_int32_t *devPtr;
-  //     u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
-  //     void *address = VertexMeta->decoded_descriptors[i][j].addr;
-  //     // gpgpu_context *ctx = GPGPU_Context();
-  //     // CUctx_st *context = GPGPUSim_Context(ctx);
-  //     devPtr =
-  //         context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
-  //     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
-  //                                                       size * sizeof(float));
-  //     // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
-  //     // print_memcpy("MemcpyVulkan",devPtr, size, 0);
-  //     if (VertexMeta->decoded_descriptors[i][j].is_texture) {
-  //       launcher_descriptorSets[i][j] = address;
-  //       launcher_deviceDescriptorSets[i][j] = address;
-  //       ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
-  //           devPtr;
-  //       ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
-  //           ->deviceAddress = devPtr;
-  //       print_memcpy("dumpTextures", devPtr, size, 0);
-        
-  //     }
+  // for (unsigned i = 0; i < 8; i++) {
+  //   if (VertexMeta->descriptor_set[i] == NULL) {
+  //     continue;
   //   }
+  //   dump_texture(VertexMeta->descriptor_set[i], i);
   // }
+  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+    for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+      if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
+        continue;
+      }
+      u_int32_t *devPtr;
+      u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
+      void *address = VertexMeta->decoded_descriptors[i][j].addr;
+      // gpgpu_context *ctx = GPGPU_Context();
+      // CUctx_st *context = GPGPUSim_Context(ctx);
+      devPtr =
+          context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+      context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
+                                                        size * sizeof(float));
+      // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+      // print_memcpy("MemcpyVulkan",devPtr, size, 0);
+      if (VertexMeta->decoded_descriptors[i][j].is_texture) {
+        launcher_descriptorSets[i][j] = address;
+        launcher_deviceDescriptorSets[i][j] = address;
+        ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
+            devPtr;
+        ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
+            ->deviceAddress = devPtr;
+        print_memcpy("dumpTextures", devPtr, size, 0);
+        
+      }
+    }
+  }
 
   // set push constants
   print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 1024, 0);
@@ -3104,6 +3100,7 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
 
 void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t descID, uint32_t binding, VkDescriptorType type)
 {
+  return;
     anv_descriptor *desc_offset = ((anv_descriptor*)((void*)desc)); // offset for raytracing_extended
     struct anv_image_view *image_view =  desc_offset->image_view;
     struct anv_sampler *sampler = desc_offset->sampler;
@@ -3184,18 +3181,18 @@ void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID,
     // VertexMeta->decoded_descriptors[setID][descID].size = size;
     
 
-    u_int32_t *devPtr;
-    gpgpu_context *ctx = GPGPU_Context();
-    CUctx_st *context = GPGPUSim_Context(ctx);
-    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
+    // u_int32_t *devPtr;
+    // gpgpu_context *ctx = GPGPU_Context();
+    // CUctx_st *context = GPGPUSim_Context(ctx);
+    // devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    // context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
 
-    setTextureFromLauncher(address, devPtr, setID, descID, size,
+    setTextureFromLauncher(address, NULL, setID, descID, size,
                            image_extent_width, image_extent_height, format,
                            VkDescriptorTypeNum, image->n_planes, image->samples,
                            image->tiling, image->planes[0].surface.isl.tiling,
                            image->planes[0].surface.isl.row_pitch_B, filter, image->levels);
-    print_memcpy("dumpTextures", devPtr, size, 0);
+    // print_memcpy("dumpTextures", devPtr, size, 0);
 }
 
 
@@ -3423,14 +3420,18 @@ void VulkanRayTracing::dump_descriptor_set(uint32_t setID, uint32_t descID, void
     fp = fopen(fullPath, "wb+");
     fwrite(address, 1, size, fp);
     fclose(fp);
+    VertexMeta->decoded_descriptors[setID][descID].addr = address;
+    VertexMeta->decoded_descriptors[setID][descID].size = size;
 
-    u_int32_t *devPtr;
-    gpgpu_context *ctx = GPGPU_Context();
-    CUctx_st *context = GPGPUSim_Context(ctx);
-    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
-    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
-    setDescriptorSetFromLauncher(address,devPtr,setID,descID);
-    print_memcpy("MemcpyVulkan",devPtr, size, 0);
+    
+
+    // u_int32_t *devPtr;
+    // gpgpu_context *ctx = GPGPU_Context();
+    // CUctx_st *context = GPGPUSim_Context(ctx);
+    // devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+    // context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
+    // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+    // print_memcpy("MemcpyVulkan",devPtr, size, 0);
 }
 
 void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set, unsigned set_index) {
@@ -3880,11 +3881,11 @@ void VulkanRayTracing::setTextureFromLauncher(void *address,
     texture->deviceAddress = deviceAddress;
     texture->mip_level = mip_level;
 
-    // VertexMeta->decoded_descriptors[setID][descID].is_texture = true;
-    // VertexMeta->decoded_descriptors[setID][descID].addr = (void*) texture;
-    // VertexMeta->decoded_descriptors[setID][descID].size = size;
-    launcher_descriptorSets[setID][descID] = (void*) texture;
-    launcher_deviceDescriptorSets[setID][descID] = (void*) texture;
+    VertexMeta->decoded_descriptors[setID][descID].is_texture = true;
+    VertexMeta->decoded_descriptors[setID][descID].addr = (void*) texture;
+    VertexMeta->decoded_descriptors[setID][descID].size = size;
+    // launcher_descriptorSets[setID][descID] = (void*) texture;
+    // launcher_deviceDescriptorSets[setID][descID] = (void*) texture;
 }
 
 void VulkanRayTracing::pass_child_addr(void *address)
