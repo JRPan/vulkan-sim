@@ -93,6 +93,13 @@ typedef struct Vulkan_RT_thread_data {
 
     unsigned attrib_index = -1;
     if (!VulkanRayTracing::is_FS) {
+      if (name.find("\%draw_call") != std::string::npos) {
+        entry.address = VulkanRayTracing::getConst();
+
+        context->get_device()->get_gpgpu()->identifier_addr["push_const"] =
+            "push_const";
+
+      } else
       if (identifier.find("VERT_ATTRIB_GENERIC") != std::string::npos) {
         // vertex shader input attributes
         assert(v.size() == 4);
@@ -156,10 +163,10 @@ typedef struct Vulkan_RT_thread_data {
         entry.address = VulkanRayTracing::getVertexOutAddr(name, offset);
       }
     } else {
-      if (identifier.find("VARYING_SLOT_VAR0_xyzw") != std::string::npos){
+      /*if (identifier.find("VARYING_SLOT_VAR0_xyzw") != std::string::npos){
         entry.address = VulkanRayTracing::getVertexOutAddr("\%field0", offset);
 
-      } else if (identifier.find("VARYING_SLOT_VAR") != std::string::npos) {
+      } else */if (identifier.find("VARYING_SLOT_VAR") != std::string::npos) {
         assert(VulkanRayTracing::VertexMeta->vertex_id_map.find(identifier) !=
                VulkanRayTracing::VertexMeta->vertex_id_map.end());
         

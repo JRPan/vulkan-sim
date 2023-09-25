@@ -127,7 +127,7 @@ std::unordered_map<void *, struct VertexAttrib *>
 // unsigned VulkanRayTracing::InstanceCount;
 // unsigned VulkanRayTracing::StartInstanceLocation;
 // unsigned VulkanRayTracing::BaseVertexLocation;
-std::list<struct vertex_metadata* > VulkanRayTracing::draw_meta;
+std::deque<struct vertex_metadata* > VulkanRayTracing::draw_meta;
 struct anv_buffer* VulkanRayTracing::index_buffer = NULL;
 VkIndexType VulkanRayTracing::index_type = VK_INDEX_TYPE_MAX_ENUM;
 
@@ -1312,7 +1312,7 @@ const bool writeImageBinary = true;
 // checkpointing to we don't have to run vertex shader every time
 // unsigned draw = 0;
 #define SKIP_VS false
-#define SKIP_FS false
+#define SKIP_FS true
 unsigned DRAW_START = 1;
 unsigned DRAW_END = 2;
 
@@ -1351,6 +1351,10 @@ unsigned DRAW_END = 2;
 // unsigned *out_attrib_size = NULL;
 // unsigned out_pos_index = -1;
 unsigned tex_index = -1;
+void VulkanRayTracing::clearDraws() {
+  draw_meta.clear();
+}
+
 void VulkanRayTracing::saveDumbDraw() {
     draw_meta.push_back(NULL);
 }
@@ -1368,6 +1372,11 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
   VertexMeta->pipeline = cmd_buffer->state.gfx.pipeline;
   assert(cmd_buffer->state.gfx.dynamic.viewport.count == 1);
   VertexMeta->viewports = *(cmd_buffer->state.gfx.dynamic.viewport.viewports);
+  printf("Viewport: x = %f, y = %f\n", VertexMeta->viewports.width,
+         VertexMeta->viewports.height);
+  if (VertexMeta->viewports.width != 1152) {
+    return;
+  }
   VertexMeta->push_constants = new float[128];
   memcpy(VertexMeta->push_constants,
          cmd_buffer->state.gfx.base.push_constants.client_data, 128 * 4);
@@ -1417,7 +1426,6 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
     //   VertexMeta->decoded_descriptors[i][j] = desc;
     //   VertexMeta->decoded_bview[i][j] = bview;
     // }
-
     dump_descriptor_sets(cmd_buffer->state.gfx.base.descriptors[i], true, i);
 
     // anv_descriptor_set *set = new anv_descriptor_set();
@@ -1452,16 +1460,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
     return;
   }
 
-  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
-    if (VertexMeta->descriptor_set[i] == NULL) {
-      continue;
-    }
-    bool ready = check_descriptor_sets(VertexMeta->descriptor_set[i], i);
-    if (!ready) {
-      return;
-    }
-  }
-
+  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+  //   if (VertexMeta->descriptor_set[i] == NULL) {
+  //     continue;
+  //   }
+  //   bool ready = check_descriptor_sets(VertexMeta->descriptor_set[i], i);
+  //   if (!ready) {
+  //     return;
+  //   }
+  // }
   struct anv_graphics_pipeline *pipeline = VertexMeta->pipeline;
   // VkViewport *viewports = cmd_buffer->state.gfx.dynamic.viewport.viewports;
   // VertexMeta->push_constants =
@@ -1585,7 +1592,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
     FBO->fbo = new float[FBO->fbo_count]{0};
     FBO->depthout = new float[FBO->fbo_count / 4];
     for (unsigned i = 0; i < FBO->fbo_count / 4; i ++) {
-      FBO->depthout[i] = 0.0f;
+      if (VertexMeta->DepthcmpOp == VK_COMPARE_OP_GREATER) {
+        FBO->depthout[i] = (float) VertexMeta->viewports.minDepth;
+      } else if (VertexMeta->DepthcmpOp == VK_COMPARE_OP_LESS ||
+                  VertexMeta->DepthcmpOp == VK_COMPARE_OP_LESS_OR_EQUAL) {
+        FBO->depthout[i] = (float) VertexMeta->viewports.maxDepth;
+      } else {
+        assert(0 && "unsupported depth compare op");
+      }
+      
     }
     FBO->fbo_dev = context->get_device()->get_gpgpu()->gpu_malloc(FBO->fbo_size);
   }
@@ -1759,9 +1774,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
           VertexMeta->vertex_out_size.at(attrib_name));
     }
   }
-  for (unsigned i = 0; i < VertexMeta->vertex_out_count["\%inColor"]; i++) {
-      VertexMeta->vertex_out.at("\%inColor")[i] = 1.0f;
-  }
+  // for (unsigned i = 0; i < VertexMeta->vertex_out_count["\%inColor"]; i++) {
+  //     VertexMeta->vertex_out.at("\%inColor")[i] = 1.0f;
+  // }
 
 
   // vertex-post processing
@@ -1903,6 +1918,9 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
         double v = (d11 * d20 - d01 * d21) / denom;
         double w = (d00 * d21 - d01 * d20) / denom;
         double u = 1.0f - v - w;
+        if (det == 0.0) {
+          continue;
+        }
         if (u < 0 || v < 0 || w < 0) {
           continue;
         }
@@ -2292,10 +2310,18 @@ void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr, VkIndexType type)
 uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
                                          uint32_t tid) {
   // instancing (multiple vertex attributes in one vertex buffer)
-  assert(buffer_index < VertexMeta->VertexAttrib->binding.size());
-  assert(buffer_index == VertexMeta->VertexAttrib->location[buffer_index]);
-  unsigned binding = VertexMeta->VertexAttrib->binding[buffer_index];
-  unsigned attrib_stride = VertexMeta->VertexAttrib->offset[buffer_index];
+  // assert(buffer_index < VertexMeta->VertexAttrib->binding.size());
+  unsigned loc = -1;
+  for (unsigned i = 0; i < VertexMeta->VertexAttrib->location.size(); i++) {
+    if (buffer_index == VertexMeta->VertexAttrib->location[i]) {
+      loc = i;
+      break;
+    }
+  }
+  assert(loc != -1);
+  assert(buffer_index == VertexMeta->VertexAttrib->location[loc]);
+  unsigned binding = VertexMeta->VertexAttrib->binding[loc];
+  unsigned attrib_stride = VertexMeta->VertexAttrib->offset[loc];
 
   unsigned instance = tid / VertexMeta->vb.size();
   unsigned index = tid % VertexMeta->vb.size();
@@ -3423,6 +3449,9 @@ void VulkanRayTracing::dump_descriptor_set(uint32_t setID, uint32_t descID, void
     VertexMeta->decoded_descriptors[setID][descID].addr = address;
     VertexMeta->decoded_descriptors[setID][descID].size = size;
 
+    if (setID == 1 && descID == 0) {
+      printf("descriptor %p \n", address);
+    }
     
 
     // u_int32_t *devPtr;
@@ -3645,6 +3674,9 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set, bool
     struct anv_descriptor *desc =
         &set->descriptors[bind_layout->descriptor_index];
     void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+    if (set_index == 1 && i == 0) {
+      printf("descriptor %p \n", desc);
+    }
 
     // if (bind_layout->type > (unsigned)VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
     //     continue;

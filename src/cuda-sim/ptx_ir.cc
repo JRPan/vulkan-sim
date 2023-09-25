@@ -1534,6 +1534,12 @@ ptx_instruction::ptx_instruction(
     }
   }
   m_scalar_type = scalar_type;
+  if (m_opcode == FDDX_OP || m_opcode == FDDY_OP) {
+    m_scalar_type.push_back(F32_TYPE);
+  }
+  if (m_opcode == EXTRACT_U8_OP) {
+    m_scalar_type.push_back(U32_TYPE);
+  }
   m_space_spec = space_spec;
   if ((opcode == ST_OP || opcode == LD_OP || opcode == LDU_OP) &&
       (space_spec == undefined_space)) {

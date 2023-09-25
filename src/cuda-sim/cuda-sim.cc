@@ -584,6 +584,7 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == LOAD_BASE_INSTANCE_OP) || 
       (m_opcode == LOAD_INSTANCE_ID_OP) || 
       (m_opcode == LOAD_FRAG_COORD_OP) ||
+      (m_opcode == DISCARD_IF_OP) ||
       (m_opcode == DEREF_VAR_OP) || (m_opcode == WRAP_32_4_OP) || (m_opcode == UNWRAP_32_4_OP) ||
       (m_opcode == GET_ELEMENT_32_OP) || (m_opcode == SET_ELEMENT_32_OP) ||
       (m_opcode == LOAD_RAY_WORLD_TO_OBJECT_OP) || (m_opcode == LOAD_RAY_OBJECT_TO_WORLD_OP) ||

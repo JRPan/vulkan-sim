@@ -3441,8 +3441,8 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
-  if (pI->source_line() == 979) {
-      printf("tid %u reading %f from addr 0x%x\n", thread->get_uid() - 1, data.f32, addr);
+  if (pI->source_line() == 330) {
+      // printf("tid %u reading %f from addr 0x%x\n", thread->get_uid() - 1, data.f32, addr);
   }
 }
 

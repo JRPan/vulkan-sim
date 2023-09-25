@@ -78,6 +78,11 @@ extern "C" void gpgpusim_vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned V
   VulkanRayTracing::vkCmdDraw(cmd_buffer, VertexCountPerInstance, StartVertex, instanceCount, StartInstance, BaseVertex);
 }
 
+extern "C" void gpgpusim_clearDraws() {
+    VulkanRayTracing::invoke_gpgpusim();
+    VulkanRayTracing::clearDraws();
+}
+
 extern "C" void gpgpusim_saveDumbDraw() {
     VulkanRayTracing::invoke_gpgpusim();
     VulkanRayTracing::saveDumbDraw();

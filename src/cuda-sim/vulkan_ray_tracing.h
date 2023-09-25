@@ -343,7 +343,7 @@ public:
     static unsigned draw;
     static bool is_FS;
     static unsigned thread_count;
-    static std::list<struct vertex_metadata* > draw_meta;
+    static std::deque<struct vertex_metadata* > draw_meta;
     static struct anv_buffer* index_buffer;
     static VkIndexType index_type;
     static void traceRay( // called by raygen shader
@@ -382,6 +382,7 @@ public:
                                                uint32_t &y);
     static uint64_t VulkanRayTracing::getConst();
     static float VulkanRayTracing::getTexLOD(unsigned thread_id);
+    static void VulkanRayTracing::clearDraws();
     static void VulkanRayTracing::saveDumbDraw();
     static void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
                                 unsigned VertexCount, unsigned StartVertex,
