@@ -311,14 +311,10 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             //     ISL_TILING_Y0, ISL_MEMCPY);
 
             Pixel pixel;
-            // pixel.r = colors[0] / 255.0;
-            // pixel.g = colors[1] / 255.0;
-            // pixel.b = colors[2] / 255.0;
-            // pixel.a = colors[3] / 255.0;
-            pixel.r = 0.f;
-            pixel.g = 0.f;
-            pixel.b = 0.f;
-            pixel.a = 0.f;
+            pixel.r = rand() % 255 / 255.0;
+            pixel.g = rand() % 255 / 255.0;
+            pixel.b = rand() % 255 / 255.0;
+            pixel.a = 1.0f;
             return pixel;
         }
         case VK_FORMAT_R16G16_SFLOAT:
@@ -343,10 +339,10 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             //     ISL_TILING_Y0, ISL_MEMCPY);
 
             Pixel pixel;
-            pixel.r = 0.f;
-            pixel.g = 0.f;
-            pixel.b = 0.f;
-            pixel.a = 0.f;
+            pixel.r = rand() % 255 / 1.0f;
+            pixel.g = rand() % 255 / 1.0f;
+            pixel.b = rand() % 255 / 1.0f;
+            pixel.a = 1.0f;
             return pixel;
         }
         case VK_FORMAT_R16G16B16A16_SFLOAT:
@@ -371,10 +367,10 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             //     ISL_TILING_Y0, ISL_MEMCPY);
 
             Pixel pixel;
-            pixel.r = 0.f;
-            pixel.g = 0.f;
-            pixel.b = 0.f;
-            pixel.a = 0.f;
+            pixel.r = rand() % 255 / 1.0f;
+            pixel.g = rand() % 255 / 1.0f;
+            pixel.b = rand() % 255 / 1.0f;
+            pixel.a = 1.0f;
             return pixel;
         }
         case VK_FORMAT_R32G32B32A32_SFLOAT:
@@ -399,19 +395,110 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
             //     ISL_TILING_Y0, ISL_MEMCPY);
 
             Pixel pixel;
-            // pixel.r = colors[0];
-            // pixel.g = colors[1];
-            // pixel.b = colors[2];
-            // pixel.a = colors[3];
-            pixel.r = 0.f;
-            pixel.g = 0.f;
-            pixel.b = 0.f;
-            pixel.a = 0.f;
+            pixel.r = rand() % 255 / 1.0f;
+            pixel.g = rand() % 255 / 1.0f;
+            pixel.b = rand() % 255 / 1.0f;
+            pixel.a = 1.0f;
+            return pixel;
+        }
+        case VK_FORMAT_BC1_RGB_UNORM_BLOCK: {
+            // 4x4 per 8 Byte
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            uint32_t size_per_tile = tileWidth * tileHeight / 4 / 4 * 8;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+            int within_tile = (x % tileWidth) / 4 + (y % tileHeight) / 4 * 32 / 4;
+            unsigned byte_offset = tileID * size_per_tile + within_tile * 8;
+            assert(byte_offset < size);
+
+            transaction.address = deviceAddress + byte_offset;
+            transaction.size = 8;
+
+            Pixel pixel;
+            pixel.r = rand() % 255 / 255.0;
+            pixel.g = rand() % 255 / 255.0;
+            pixel.b = rand() % 255 / 255.0;
+            pixel.a = 1.0f;
+            return pixel;
+        }
+        case VK_FORMAT_BC3_UNORM_BLOCK: {
+            // 4x4 per 16 Byte
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            uint32_t size_per_tile = tileWidth * tileHeight / 4 / 4 * 8;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+            int within_tile = (x % tileWidth) / 4 + (y % tileHeight) / 4 * 32 / 4;
+            unsigned byte_offset = tileID * size_per_tile + within_tile * 16;
+            assert(byte_offset < size);
+
+            transaction.address = deviceAddress + byte_offset;
+            transaction.size = 16;
+
+            Pixel pixel;
+            pixel.r = rand() % 255 / 255.0;
+            pixel.g = rand() % 255 / 255.0;
+            pixel.b = rand() % 255 / 255.0;
+            pixel.a = 1.0f;
+            return pixel;
+        }
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+        {
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+
+            if (use_external_launcher)
+            {
+                transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 4;
+                transaction.size = 4;
+            }
+            else
+            {
+                transaction.address = address + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 4;
+                transaction.size = 4;
+            }
+
+            // uint8_t colors[4];
+
+            // intel_tiled_to_linear(x * 4, x * 4 + 4, y, y + 1,
+            //     colors, address, width * 4 ,row_pitch_B, false,
+                // ISL_TILING_Y0, ISL_MEMCPY);
+
+            Pixel pixel;
+            pixel.r = rand() % 255 / 255.0;
+            pixel.g = rand() % 255 / 255.0;
+            pixel.b = rand() % 255 / 255.0;
+            pixel.a = 1.0f;
+            return pixel;
+        }
+        case VK_FORMAT_D16_UNORM:
+        {
+            uint32_t tileWidth = 32;
+            uint32_t tileHeight = 32;
+            int tileX = x / tileWidth;
+            int tileY = y / tileHeight;
+            int tileID = tileX + tileY * width / tileWidth;
+
+            transaction.address = deviceAddress + (tileID * tileWidth * tileHeight + (x % tileWidth) * tileHeight + (y % tileHeight)) * 2;
+            transaction.size = 2;
+
+            Pixel pixel;
+            pixel.r = rand() % 255 / 1.0f;
+            pixel.g = rand() % 255 / 1.0f;
+            pixel.b = rand() % 255 / 1.0f;
+            pixel.a = 1.0f;
             return pixel;
         }
         default:
         {
             printf("%d not implemented\n", vk_format);
+            fflush(stdout);
             assert(0);
             break;
         }

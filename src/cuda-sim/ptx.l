@@ -200,6 +200,7 @@ fddx TC; yylval->int_value = FDDX_OP; return OPCODE;
 fddy TC; yylval->int_value = FDDY_OP; return OPCODE;
 extract_u8 TC; yylval->int_value = EXTRACT_U8_OP; return OPCODE;
 load_frag_coord TC; yylval->int_value = LOAD_FRAG_COORD_OP; return OPCODE;
+load_front_face TC; yylval->int_value = LOAD_FRONT_FACE_OP; return OPCODE;
 txs TC; yylval->int_value = TXS_OP; return OPCODE;
 wrap_32_4 TC; yylval->int_value = WRAP_32_4_OP; return OPCODE;
 unwrap_32_4 TC; yylval->int_value = UNWRAP_32_4_OP; return OPCODE;

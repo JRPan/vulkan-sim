@@ -3441,7 +3441,7 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   }
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
-  if (pI->source_line() == 330) {
+  if (pI->source_line() == 832) {
       // printf("tid %u reading %f from addr 0x%x\n", thread->get_uid() - 1, data.f32, addr);
   }
 }
@@ -5865,8 +5865,8 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
-    if (pI->source_line() == 1502) {
-      printf("tid %u writing %f to addr 0x%x\n", thread->get_uid() - 1,data.f32, addr);
+    if (pI->source_line() == 3083) {
+      // printf("tid %u writing %f to addr 0x%x\n", thread->get_uid() - 1,data.f32, addr);
     }
     mem->write(addr, size / 8, &data.s64, thread, pI);
     // assert(size == 32);
@@ -6139,6 +6139,7 @@ void tex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
   float lod = VulkanRayTracing::getTexLOD(thread_id);
+  assert(lod >= 0.f);
 
   float c0, c1, c2, c3;
 
@@ -6642,11 +6643,39 @@ void load_vulkan_descriptor_impl(const ptx_instruction *pI, ptx_thread_info *thr
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
   const operand_info &src2 = pI->src2();
+  std::string name = dst.get_symbol()->name();
 
   src1_data = thread->get_operand_value(src1, dst, U32_TYPE, thread, 1);
   src2_data = thread->get_operand_value(src2, dst, U32_TYPE, thread, 1);
 
-  data.u64 = (uint64_t)(VulkanRayTracing::getDescriptorAddress(src1_data.u32, src2_data.u32));
+  unsigned set_index = src1_data.u32;
+  unsigned desc_index = src2_data.u32;
+
+  // if(name.find("sampler") != std::string::npos) {
+  //   // skip
+  // } else if (name.find("\%ssa") != std::string::npos) {
+  //   // 
+  // } else if (name.find("decal_atlas") != std::string::npos) {
+  //   // skip
+  // } else if (name.find("shadow_atlas") != std::string::npos) {
+  //   set_index = 1;
+  // } else if (name.find("reflection_atlas") != std::string::npos) {
+  //   set_index = 1;
+  // } else if (name.find("radiance_cubemap") != std::string::npos) {
+  //   set_index = 1;
+  // } else if (name.find("m_texture_albedo") != std::string::npos) {
+  //   set_index = 3;
+  // } else if (name.find("m_texture_metallic") != std::string::npos) {
+  //   set_index = 3;
+  // } else if (name.find("m_texture_roughness") != std::string::npos) {
+  //   set_index = 3;
+  // } else if (name.find("directional_shadow_atlas") != std::string::npos) {
+  //   set_index = 1;
+  // } else {
+  //   assert(0);
+  // }
+
+  data.u64 = (uint64_t)(VulkanRayTracing::getDescriptorAddress(set_index, desc_index));
   thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
 }
 
@@ -7467,9 +7496,12 @@ void load_first_vertex_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
   const operand_info &dst = pI->dst();
 
 
-  dst_data.u32 = VulkanRayTracing::VertexMeta->StartVertexLocation;
+  dst_data.s32 = VulkanRayTracing::VertexMeta->StartVertexLocation;
 
-  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+  thread->set_operand_value(dst, dst_data, S32_TYPE, thread, pI);
+  memory_space_t space = pI->get_space();
+  thread->m_last_effective_address = 0;
+  thread->m_last_memory_space = space;
 }
 
 void load_vertex_id_zero_base_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7477,9 +7509,12 @@ void load_vertex_id_zero_base_impl(const ptx_instruction *pI, ptx_thread_info *t
 
   const operand_info &dst = pI->dst();
 
-  dst_data.u32 = VulkanRayTracing::VertexMeta->BaseVertexLocation;
+  dst_data.s32 = VulkanRayTracing::VertexMeta->BaseVertexLocation;
 
-  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+  thread->set_operand_value(dst, dst_data, S32_TYPE, thread, pI);
+  memory_space_t space = pI->get_space();
+  thread->m_last_effective_address = 0;
+  thread->m_last_memory_space = space;
 }
 
 void load_base_instance_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7487,9 +7522,12 @@ void load_base_instance_impl(const ptx_instruction *pI, ptx_thread_info *thread)
 
   const operand_info &dst = pI->dst();
 
-  dst_data.u32 = VulkanRayTracing::VertexMeta->StartInstanceLocation;
+  dst_data.s32 = VulkanRayTracing::VertexMeta->StartInstanceLocation;
 
-  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+  thread->set_operand_value(dst, dst_data, S32_TYPE, thread, pI);
+  memory_space_t space = pI->get_space();
+  thread->m_last_effective_address = 0;
+  thread->m_last_memory_space = space;
 }
 
 void load_instance_id_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7498,9 +7536,12 @@ void load_instance_id_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &dst = pI->dst();
 
   unsigned thread_id = thread->get_tid().x + thread->get_ctaid().x * thread->get_ntid().x;
-  dst_data.u32 = thread_id / VulkanRayTracing::VertexMeta->vb.size();
+  dst_data.s32 = thread_id / VulkanRayTracing::VertexMeta->vb.size();
   
-  thread->set_operand_value(dst, dst_data, U32_TYPE, thread, pI);
+  thread->set_operand_value(dst, dst_data, S32_TYPE, thread, pI);
+  memory_space_t space = pI->get_space();
+  thread->m_last_effective_address = 0;
+  thread->m_last_memory_space = space;
 }
 
 void discard_if_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7510,7 +7551,7 @@ void discard_if_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   src_data = thread->get_operand_value(src1, src1, B32_TYPE, thread, 1);
 
-  if (src_data.pred == 1) {
+  if (src_data.pred == 0) {
     thread->set_done();
     thread->exitCore();
     thread->registerExit();
@@ -7585,6 +7626,21 @@ void load_frag_coord_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   thread->set_operand_value(dst2, y_data, U32_TYPE, thread, pI);
   thread->set_operand_value(dst3, zero, U32_TYPE, thread, pI);
   thread->set_operand_value(dst4, zero, U32_TYPE, thread, pI);
+
+  memory_space_t space = pI->get_space();
+  thread->m_last_effective_address = 0;
+  thread->m_last_memory_space = space;
+}
+
+void load_front_face_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+
+  ptx_reg_t data;
+
+  // the way ptxplus handles the zero flag, 1 = false and 0 = true
+  data.pred = 0;
+
+  thread->set_operand_value(dst, data, PRED_TYPE, thread, pI);
 }
 
 void txs_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

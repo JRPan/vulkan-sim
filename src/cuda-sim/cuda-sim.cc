@@ -442,6 +442,9 @@ addr_t generic_to_local(unsigned smid, unsigned hwtid, addr_t addr) {
 addr_t generic_to_global(addr_t addr) { return addr; }
 
 void *gpgpu_t::gpu_malloc(size_t size) {
+  if (m_dev_malloc + size > 0xF0000000) {
+    m_dev_malloc = GLOBAL_HEAP_START;
+  }
   unsigned long long result = m_dev_malloc;
   if (g_debug_execution >= 3) {
     printf(
@@ -579,7 +582,7 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == CALL_CLOSEST_HIT_SHADER_OP) || (m_opcode == LD_RAY_LAUNCH_ID_OP) ||
       (m_opcode == LD_RAY_LAUNCH_SIZE_OP) || (m_opcode == LD_VK_DESC_OP) ||
       (m_opcode == IMG_DEREF_ST_OP) || (m_opcode == RT_ALLOC_MEM_OP) || 
-      (m_opcode == LOAD_FIRST_VERTEX_OP) || 
+      (m_opcode == LOAD_FIRST_VERTEX_OP) || (m_opcode == LOAD_FRONT_FACE_OP) ||
       (m_opcode == LOAD_VERTEX_ID_ZERO_BASE_OP) || 
       (m_opcode == LOAD_BASE_INSTANCE_OP) || 
       (m_opcode == LOAD_INSTANCE_ID_OP) || 
@@ -625,7 +628,7 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != CALL_CLOSEST_HIT_SHADER_OP) && (m_opcode != LD_RAY_LAUNCH_ID_OP) &&
       (m_opcode != LD_RAY_LAUNCH_SIZE_OP) && (m_opcode != LD_VK_DESC_OP) &&
       (m_opcode != IMG_DEREF_ST_OP) && (m_opcode != RT_ALLOC_MEM_OP) && 
-      (m_opcode == LOAD_FIRST_VERTEX_OP) &&
+      (m_opcode == LOAD_FIRST_VERTEX_OP) && (m_opcode == LOAD_FRONT_FACE_OP) &&
       (m_opcode == LOAD_VERTEX_ID_ZERO_BASE_OP) && 
       (m_opcode == LOAD_BASE_INSTANCE_OP) && 
       (m_opcode == LOAD_INSTANCE_ID_OP) && 
@@ -804,7 +807,8 @@ void ptx_instruction::set_opcode_and_latency() {
     case LOAD_VERTEX_ID_ZERO_BASE_OP:
     case LOAD_BASE_INSTANCE_OP:
     case LOAD_INSTANCE_ID_OP:
-    case DISCARD_IF_OP:
+    case LOAD_FRONT_FACE_OP:
+    // case DISCARD_IF_OP:
     case LOAD_FRAG_COORD_OP:
     case LD_OP:
     case IMG_DEREF_LD_OP:
@@ -1172,7 +1176,8 @@ void ptx_instruction::pre_decode() {
                m_opcode == LOAD_VERTEX_ID_ZERO_BASE_OP ||
                m_opcode == LOAD_BASE_INSTANCE_OP ||
                m_opcode == LOAD_INSTANCE_ID_OP ||
-               m_opcode == LOAD_FRAG_COORD_OP) {
+               m_opcode == LOAD_FRAG_COORD_OP ||
+               m_opcode == LOAD_FRONT_FACE_OP) {
         cache_op = CACHE_ALL;
       }
       break;

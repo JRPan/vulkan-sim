@@ -232,7 +232,7 @@ typedef struct vertex_metadata
     std::vector<std::vector<unsigned>> index_to_draw;
     unsigned width = -1;
     unsigned height = -1;
-    uint32_t constants_dev_addr = 0;
+    uint32_t *constants_dev_addr = 0;
     float *push_constants = NULL;
 
     std::unordered_map<std::string, std::string> vertex_id_map;
@@ -253,9 +253,9 @@ typedef struct vertex_metadata
     // struct anv_vertex_binding *vbuffer;
     struct anv_graphics_pipeline *pipeline;
     struct anv_descriptor_set *descriptor_set[8] = {NULL};
-    struct desc_ptr decoded_descriptors[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
-    // struct anv_descriptor *decoded_descriptors[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
-    // struct anv_buffer_view *decoded_bview[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
+    // struct desc_ptr decoded_descriptors[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
+    struct anv_descriptor *decoded_descriptors[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
+    struct anv_buffer_view *decoded_bview[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
 
     ~vertex_metadata() {
       for (auto attrib : vertex_out) {

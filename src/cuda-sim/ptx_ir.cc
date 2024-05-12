@@ -1577,6 +1577,11 @@ ptx_instruction::ptx_instruction(
     if (fname == "cudaGetParameterBufferV2") m_is_cdp = 2;
     if (fname == "cudaLaunchDeviceV2") m_is_cdp = 4;
   }
+
+  if (opcode == DISCARD_IF_OP) {
+    assert(m_operands.size() == 1);
+    m_pred = m_operands[0].get_symbol();
+  }
 }
 
 void ptx_instruction::print_insn() const {

@@ -3044,7 +3044,7 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   std::stringstream addr_str;
   addr_str << std::hex;
   int mem_count;
-  bool has_invalid_addr = true;
+  bool has_valid_addr = false;
   
   for (unsigned t = 0; t < m_warp_size; t++) {
     if (inst.active(t)) {
@@ -3053,17 +3053,19 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       pI = m_thread[tid]->func_info()->get_instruction(inst.pc);
       m_thread[tid]->ptx_exec_inst(inst, t);
       mem_count = m_thread[tid]->m_last_effective_addresses.size();
+      if (pI->get_opcode() == LOAD_FIRST_VERTEX_OP ||
+          pI->get_opcode() == LOAD_VERTEX_ID_ZERO_BASE_OP ||
+          pI->get_opcode() == LOAD_BASE_INSTANCE_OP ||
+          pI->get_opcode() == LOAD_INSTANCE_ID_OP ||
+          pI->get_opcode() == LOAD_FRAG_COORD_OP || 
+          pI->get_opcode() == LOAD_FRONT_FACE_OP) {
+        inst.space.set_type(const_space);
+        pI->get_space().set_type(const_space);
+      }
 
       // virtual function
       checkExecutionStatusAndUpdate(inst, t, tid);
     }
-  }
-  if (pI->get_opcode() == LOAD_FIRST_VERTEX_OP ||
-        pI->get_opcode() == LOAD_VERTEX_ID_ZERO_BASE_OP ||
-        pI->get_opcode() == LOAD_BASE_INSTANCE_OP ||
-        pI->get_opcode() == LOAD_INSTANCE_ID_OP ||
-        pI->get_opcode() == LOAD_FRAG_COORD_OP) {
-      inst.space.set_type(global_space);
   }
   // print out ptx traces
   assert(pI);
@@ -3083,14 +3085,40 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   // opcode
   switch (pI->get_opcode()) {
     // ignored
-    case LD_RAY_LAUNCH_ID_OP...CALL_ANY_HIT_SHADER_OP:
+    case LD_RAY_LAUNCH_ID_OP...RT_ALLOC_MEM_OP:
+    case WRAP_32_4_OP...CALL_ANY_HIT_SHADER_OP:
       return;
     default:
       break;
   }
   switch (pI->get_opcode()) {
+    case LOAD_FIRST_VERTEX_OP:
+    case LOAD_VERTEX_ID_ZERO_BASE_OP:
+    case LOAD_BASE_INSTANCE_OP:
+    case LOAD_INSTANCE_ID_OP:
+    case LOAD_FRAG_COORD_OP:
+    case LOAD_FRONT_FACE_OP: {
+      // constant space
+      sass << "LDC";
+      break;
+    }
     case LD_OP: {
-      sass << "LD.SYS";
+      switch(pI->get_space().get_type()) {
+        case const_space:
+          sass << "LDC";
+          break;
+        case global_space:
+          sass << "LD.SYS";
+          break;
+        case local_space:
+          sass << "LDL";
+          break;
+        case shared_space:
+          sass << "LDS";
+          break;
+        default:
+          assert(0);
+      }
       break;
     }
     case ST_OP: {
@@ -3131,6 +3159,7 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       break;
     }
     case RET_OP:
+    case DISCARD_IF_OP:
     case EXIT_OP: {
       sass << "EXIT";
       break;
@@ -3140,6 +3169,10 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       unsigned i_type = pI->get_type();
       if (i_type == F32_TYPE) {
         sass << "FMUL";
+      } else if (i_type == U32_TYPE) {
+        sass << "IMUL";
+      } else if (i_type == S32_TYPE) {
+        sass << "IMUL";
       } else {
         assert(0);
       }
@@ -3215,8 +3248,14 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
         sass << "F2F";
       } else if (to_type == F32_TYPE && from_type == S32_TYPE) {
         sass << "I2F";
-      }else if (to_type == F32_TYPE && from_type == U32_TYPE) {
+      } else if (to_type == F32_TYPE && from_type == U32_TYPE) {
         sass << "I2F";
+      } else if (to_type == U32_TYPE && from_type == F32_TYPE) {
+        sass << "F2I";
+      } else if (to_type == U32_TYPE && from_type == S32_TYPE) {
+        sass << "I2I";
+      } else if (to_type == U32_TYPE && from_type == U32_TYPE) {
+        sass << "I2I";
       } else {
         assert(0);
       }
@@ -3226,7 +3265,11 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
     case SIN_OP:
     case COS_OP:
     case LG2_OP:
-    case EX2_OP: {
+    case EX2_OP:
+    case FDDX_OP:
+    case FDDY_OP:
+    case EXTRACT_U8_OP:
+    case SQRT_OP: {
       sass << "MUFU";
       break;
     }
@@ -3245,11 +3288,24 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
       }
       break;
     }
+    case AND_OP:
+    case SHL_OP: 
+    case OR_OP: 
+    case NOT_OP:
+    {
+      sass << "LOP";
+      break;
+    }
+    case SELP_OP: {
+      sass << "R2P";
+      break;
+    }
 
     default:
       // implement this
-      // printf("ERROR: opcode not implemented\n");
-      // assert(0);
+      printf("ERROR: opcode %u not implemented\n", pI->get_opcode());
+      fflush(stdout);
+      assert(0);
       break;
   }
   sass << " ";
@@ -3260,33 +3316,29 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
     sass << "R" << inst.in[i] << " ";
   }
   // mem
-  // std::string identifier = pI->src3().get_symbol()->name();
-  // std::vector<std::string> v;
-  // std::stringstream ss(identifier);
-
-  // std::string attrib_name = "UNDEFINED";
-
-  // while (ss.good()) {
-  //   std::string substr;
-  //   getline(ss, substr, '_');
-  //   v.push_back(substr);
-  // }
-
-  // if (v.size() == 4) {
-  //   attrib_name = v[0] + '_' + v[1] + '_' + v[2];
-  //   assert(m_gpu->identifier_addr.find(attrib_name) !=
-  //          m_gpu->identifier_addr.end());
-  // }
   switch (pI->get_opcode()) {
+    case LOAD_FIRST_VERTEX_OP:
+    case LOAD_VERTEX_ID_ZERO_BASE_OP:
+    case LOAD_BASE_INSTANCE_OP:
+    case LOAD_INSTANCE_ID_OP:
+    case LOAD_FRAG_COORD_OP: 
+    case LOAD_FRONT_FACE_OP:
     case LD_OP:
     case ST_OP:
       for (unsigned t = 0; t < m_warp_size; t++) {
         if (inst.active(t)) {
           unsigned tid = m_warp_size * warpId + t;
           addr_str << "0x" << m_thread[tid]->last_eaddr() << " ";
-          // if (m_gpu->identifier_addr.at(attrib_name) == identifier) {
-          //   has_invalid_addr = false;
-          // }
+          if(!has_valid_addr) {
+            for (const auto &start : m_gpu->valid_addr_start) {
+              uint64_t end = m_gpu->valid_addr_end.at(start.first);
+              if (start.second <= m_thread[tid]->last_eaddr() &&
+                  end >= m_thread[tid]->last_eaddr()) {
+                has_valid_addr = true;
+                break;
+              }
+            }
+          }
         }
       }
       // 4 byte/thread, no compression
@@ -3348,7 +3400,7 @@ void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
   switch (pI->get_opcode()) {
     case LD_OP:
     case ST_OP:
-      if (has_invalid_addr) {
+      if (!has_valid_addr) {
         // no valid addr, don't print
         // std::cout << sass.str() << std::endl;
         return;

@@ -1253,8 +1253,6 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 unsigned block_size = 64;
 void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
-  // TODO: choose correct shaders
-  // shader_id = shader_id + 2;
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
 
@@ -1312,7 +1310,7 @@ const bool writeImageBinary = true;
 // checkpointing to we don't have to run vertex shader every time
 // unsigned draw = 0;
 #define SKIP_VS false
-#define SKIP_FS true
+#define SKIP_FS false
 unsigned DRAW_START = 1;
 unsigned DRAW_END = 2;
 
@@ -1352,6 +1350,9 @@ unsigned DRAW_END = 2;
 // unsigned out_pos_index = -1;
 unsigned tex_index = -1;
 void VulkanRayTracing::clearDraws() {
+  for (auto &draw : draw_meta) {
+      delete draw;
+  }
   draw_meta.clear();
 }
 
@@ -1363,7 +1364,7 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
                                 unsigned VertexCount, unsigned StartVertex,
                                 unsigned instanceCount, unsigned StartInstance,
                                 unsigned BaseVertex) {
-  if (VertexCount == 6) {
+  if (VertexCount == 6 && cmd_buffer->state.gfx.dynamic.depth_compare_op == VK_COMPARE_OP_NEVER) {
     return;
   }
   VertexMeta = new struct vertex_metadata();
@@ -1372,8 +1373,6 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
   VertexMeta->pipeline = cmd_buffer->state.gfx.pipeline;
   assert(cmd_buffer->state.gfx.dynamic.viewport.count == 1);
   VertexMeta->viewports = *(cmd_buffer->state.gfx.dynamic.viewport.viewports);
-  printf("Viewport: x = %f, y = %f\n", VertexMeta->viewports.width,
-         VertexMeta->viewports.height);
   if (VertexMeta->viewports.width != 1152) {
     return;
   }
@@ -1412,21 +1411,22 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
       continue;
     }
     struct anv_descriptor_set *set = cmd_buffer->state.gfx.base.descriptors[i];
-    // for (int j = 0; j < set->layout->binding_count; j++) {
-    //   const struct anv_descriptor_set_binding_layout *bind_layout =
-    //       &set->layout->binding[j];
-    //   if (bind_layout->type == (unsigned)-1) {
-    //     continue;
-    //   }
-    //   struct anv_descriptor *desc =
-    //       &set->descriptors[bind_layout->descriptor_index];
+    for (int j = 0; j < set->layout->binding_count; j++) {
+      const struct anv_descriptor_set_binding_layout *bind_layout =
+          &set->layout->binding[j];
+      if (bind_layout->type == (unsigned)-1) {
+        continue;
+      }
+      
+      struct anv_descriptor *desc =
+          &set->descriptors[bind_layout->descriptor_index];
 
-    //   struct anv_buffer_view *bview =
-    //       &set->buffer_views[bind_layout->buffer_view_index];
-    //   VertexMeta->decoded_descriptors[i][j] = desc;
-    //   VertexMeta->decoded_bview[i][j] = bview;
-    // }
-    dump_descriptor_sets(cmd_buffer->state.gfx.base.descriptors[i], true, i);
+      struct anv_buffer_view *bview =
+          &set->buffer_views[bind_layout->buffer_view_index];
+      VertexMeta->decoded_descriptors[i][j] = desc;
+      VertexMeta->decoded_bview[i][j] = bview;
+    }
+    // dump_descriptor_sets(cmd_buffer->state.gfx.base.descriptors[i], true, i);
 
     // anv_descriptor_set *set = new anv_descriptor_set();
     // memcpy(set, cmd_buffer->state.gfx.base.descriptors[i], sizeof(anv_descriptor_set));
@@ -1439,24 +1439,39 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
 
 void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCount, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex) {
   // assume only vertex and frag. No geometry or tessellation
-  // struct anv_vertex_binding *vbuffer = cmd_buffer->state.vertex_bindings;
-  while(true) {
-
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
   if (draw_meta.empty()) {
     return;
   }
-  VertexMeta = draw_meta.front();
+  // define starting draw
+  draw = 0;
+  char const *start_env = std::getenv("START_DRAW");
+  if (start_env != NULL) {
+    draw = std::stoi(std::string(start_env));
+  }
+  char const *app_env = std::getenv("VULKAN_APP");
+  std::string vulkan_app(app_env);
+
+
+  while(true) {
+    if (draw == 23 && vulkan_app == "sponza") {
+      draw = 26;
+    }
+    if (draw == 80 && vulkan_app == "materials") {
+      draw = draw_meta.size();
+    }
+
+    if (draw == draw_meta.size()) {
+      context->get_device()->get_gpgpu()->gtrace.close();
+      system("mv traces.traceg complete.traceg");
+      exit(0);
+    }
+
+  VertexMeta = draw_meta[draw];
   
   if (!VertexMeta) {
-    draw_meta.pop_front();
-    return;
-  }
-
-  if (VertexMeta->VertexCountPerInstance == 6) {
-    delete(VertexMeta->push_constants);
-    delete (VertexMeta);
-    VertexMeta = NULL;
-    draw_meta.pop_front();
+    // draw_meta.pop_front();
     return;
   }
 
@@ -1478,9 +1493,6 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   unsigned frag_id = vertex_id + 1;
   // VkCompareOp DepthcmpOp = cmd_buffer->state.gfx.dynamic.depth_compare_op;
   // VertexAttrib = pipeline_vertex_map.at((void*) pipeline);
-
-  gpgpu_context *ctx = GPGPU_Context();
-  CUctx_st *context = GPGPUSim_Context(ctx);
 
   char const *app_env = std::getenv("VULKAN_APP");
   // if (app_env == NULL) {
@@ -1580,8 +1592,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
     printf("render resolution: %u x %u\n", (unsigned) VertexMeta->viewports.width,(unsigned) VertexMeta->viewports.height);
     FBO->width = VertexMeta->viewports.width;
     FBO->height = VertexMeta->viewports.height;
-    // FBO->width = 2560;
-    // FBO->height = 1440;
+    FBO->width = 2560;
+    FBO->height = 1440;
     // FBO->width = 3840;
     // FBO->height = 2160;
     FBO->x = VertexMeta->viewports.x;
@@ -1602,7 +1614,14 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
       }
       
     }
-    FBO->fbo_dev = context->get_device()->get_gpgpu()->gpu_malloc(FBO->fbo_size);
+    FBO->fbo_dev = 0xF0000000;
+    context->get_device()
+      ->get_gpgpu()
+      ->valid_addr_start["fbo_dev"] = (uint64_t) FBO->fbo_dev;
+    context->get_device()
+      ->get_gpgpu()
+      ->valid_addr_end["fbo_dev"] = (uint64_t) FBO->fbo_dev + FBO->fbo_size;
+    // FBO->fbo_dev = context->get_device()->get_gpgpu()->gpu_malloc(FBO->fbo_size);
   }
   assert(FBO->fbo);
   assert(FBO->depthout);
@@ -1659,25 +1678,24 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   printf("vertex count: %u\n", VertexMeta->vb.size());
 
   VulkanRayTracing::is_FS = false;
-  for (unsigned i = 0; i < MAX_VBS; i++) {
-    if (VertexMeta->vertex_buffers[i]) {
-      // printf("vb[%u] is used\n", i);
-      dumpVertex(VertexMeta->vertex_buffers[i], pipeline, i);
+  for (auto &i : VertexMeta->VertexAttrib->binding) {
+    if (VertexMeta->vertex_stride[i] != 0) {
+      assert(VertexMeta->vertex_buffers[i]->size %
+                 (VertexMeta->vertex_stride[i] / 4) ==
+             0);
       // stride should be multilpe of 4 bytes -> vectors
       assert(VertexMeta->vertex_stride[i] % 4 == 0);
-      // VertexMeta->vertex_stride[i] = pipeline->vb[i].stride;
-      // vertex count should be multiple of vector size
-      assert(VertexMeta->vertex_buffers[i]->size %
-                 (VertexMeta->vertex_stride[i] / 4) == 0);
     }
+
+      dumpVertex(VertexMeta->vertex_buffers[i], pipeline, i);
   }
   // Dump Descriptor Sets
 //   return;
-  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
-  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
-  //     dump_descriptor(i, j, VertexMeta->decoded_descriptors[i][j], VertexMeta->decoded_bview[i][j], false);
-  //   }
-  // }
+  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+    for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+      dump_descriptor(i, j, VertexMeta->decoded_descriptors[i][j], VertexMeta->decoded_bview[i][j], false);
+    }
+  }
 
   // for (unsigned i = 0; i < 8; i++) {
   //   if (VertexMeta->descriptor_set[i] == NULL) {
@@ -1685,35 +1703,35 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   //   }
   //   dump_descriptor_sets(VertexMeta->descriptor_set[i], false, i);
   // }
-  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
-    for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
-      if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
-        continue;
-      }
-      u_int32_t *devPtr;
-      u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
-      void *address = VertexMeta->decoded_descriptors[i][j].addr;
-      // gpgpu_context *ctx = GPGPU_Context();
-      // CUctx_st *context = GPGPUSim_Context(ctx);
-      devPtr =
-          context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
-      context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
-                                                        size * sizeof(float));
-      // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
-      // print_memcpy("MemcpyVulkan",devPtr, size, 0);
-      if (VertexMeta->decoded_descriptors[i][j].is_texture) {
-        continue;
-        // ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
-        //     devPtr;
-        // ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
-        //     ->deviceAddress = devPtr;
-      } else {
-        launcher_descriptorSets[i][j] = address;
-        launcher_deviceDescriptorSets[i][j] = devPtr;
-        print_memcpy("MemcpyVulkan",devPtr, size, 0);
-      }
-    }
-  }
+  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+  //     if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
+  //       continue;
+  //     }
+  //     u_int32_t *devPtr;
+  //     u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
+  //     void *address = VertexMeta->decoded_descriptors[i][j].addr;
+  //     // gpgpu_context *ctx = GPGPU_Context();
+  //     // CUctx_st *context = GPGPUSim_Context(ctx);
+  //     devPtr =
+  //         context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+  //     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
+  //                                                       size * sizeof(float));
+  //     // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+  //     // print_memcpy("MemcpyVulkan",devPtr, size, 0);
+  //     if (VertexMeta->decoded_descriptors[i][j].is_texture) {
+  //       continue;
+  //       // ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
+  //       //     devPtr;
+  //       // ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
+  //       //     ->deviceAddress = devPtr;
+  //     } else {
+  //       launcher_descriptorSets[i][j] = address;
+  //       launcher_deviceDescriptorSets[i][j] = devPtr;
+  //       print_memcpy("MemcpyVulkan",devPtr, size, 0);
+  //     }
+  //   }
+  // }
 
   // InstanceCount = 20;
   thread_count = VertexMeta->vb.size() * VertexMeta->InstanceCount;
@@ -1721,10 +1739,23 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   VertexMeta->constants_dev_addr =
       context->get_device()->get_gpgpu()->gpu_malloc(128);
   context->get_device()->get_gpgpu()->memcpy_to_gpu(VertexMeta->constants_dev_addr, VertexMeta->push_constants, 128);
+  context->get_device()
+      ->get_gpgpu()
+      ->valid_addr_start["push_constant"] = (uint64_t) VertexMeta->constants_dev_addr;
+  context->get_device()
+      ->get_gpgpu()
+      ->valid_addr_end["push_constant"] = (uint64_t) VertexMeta->constants_dev_addr + 128;
   print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 128, 0);
   if (!SKIP_VS) {
     // run vertex shader
     run_shader(vertex_id,thread_count);
+  }
+
+  if (draw == 1 && vulkan_app == "materials") {
+    draw++;
+    context->get_device()->get_gpgpu()->valid_addr_start.clear();
+    context->get_device()->get_gpgpu()->valid_addr_end.clear();
+    continue;
   }
 
   std::string mesa_root = getenv("MESA_ROOT");
@@ -2045,6 +2076,17 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   }
 
   printf("total frags collected - %u\n",FBO->thread_info_pixel.size());
+  if (FBO->thread_info_pixel.size() == 0) {
+    draw++;
+    // delete (VertexMeta);
+
+    // VertexMeta = NULL;
+    // draw_meta.pop_front();
+      context->get_device()->get_gpgpu()->valid_addr_start.clear();
+      context->get_device()->get_gpgpu()->valid_addr_end.clear();
+
+    continue;
+  }
 
   if (!SKIP_FS) {
   // copy vertex data to gpu
@@ -2062,7 +2104,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
                                                attribs.at(attrib_name)[0].size() *
                                                sizeof(float);
 
-    free(VertexMeta->vertex_out.at(attrib_name));
+    delete VertexMeta->vertex_out.at(attrib_name);
     VertexMeta->vertex_out[attrib_name] = new float[VertexMeta->vertex_out_count.at(attrib_name)];
   }
 
@@ -2089,11 +2131,15 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
     }
   }
   assert(pixel_index.size() == FBO->thread_info_pixel.size());
-  // std::string tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR2_xy");
+
   std::string tex_id = "UNDEFINED";
+  if (VertexMeta->vertex_id_map.find("VARYING_SLOT_VAR3_xy") !=
+      VertexMeta->vertex_id_map.end()) {
+    std::string tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR3_xy");
+  }
   for (unsigned i = 0; i < FBO->thread_info_pixel.size(); i ++) {
     float lod = 0;
-    if (tex_id.find("UNDEFINED") == std::string::npos) {
+    if (tex_id != "UNDEFINED") {
       // calcualte LOD of each pixel
       unsigned pixel = FBO->thread_info_pixel[i];
       unsigned x = pixel % FBO->width;
@@ -2157,9 +2203,13 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
 
   for (auto attrib : VertexMeta->vertex_id_map) {
     std::string attrib_name = attrib.second;
-    VertexMeta->vertex_out_devptr.at(attrib_name) =
-        context->get_device()->get_gpgpu()->gpu_malloc(
+    uint32_t *dev_ptr = context->get_device()->get_gpgpu()->gpu_malloc(
             VertexMeta->vertex_out_size.at(attrib_name));
+    VertexMeta->vertex_out_devptr.at(attrib_name) = dev_ptr;
+    context->get_device()->get_gpgpu()->valid_addr_start[attrib_name] =
+        (uint64_t)dev_ptr;
+    context->get_device()->get_gpgpu()->valid_addr_end[attrib_name] =
+        ((uint64_t)dev_ptr) + VertexMeta->vertex_out_size.at(attrib_name);
     context->get_device()->get_gpgpu()->memcpy_to_gpu(
         VertexMeta->vertex_out_devptr.at(attrib_name),
         VertexMeta->vertex_out.at(attrib_name),
@@ -2169,11 +2219,11 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
                  VertexMeta->vertex_out_stride.at(attrib_name) * block_size);
   }
 
-//   for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
-//     for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
-//       dump_texture(i, j, VertexMeta->decoded_descriptors[i][j]);
-//     }
-//   }
+  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+    for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+      dump_texture(i, j, VertexMeta->decoded_descriptors[i][j]);
+    }
+  }
 
   // for (unsigned i = 0; i < 8; i++) {
   //   if (VertexMeta->descriptor_set[i] == NULL) {
@@ -2181,34 +2231,34 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   //   }
   //   dump_texture(VertexMeta->descriptor_set[i], i);
   // }
-  for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
-    for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
-      if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
-        continue;
-      }
-      u_int32_t *devPtr;
-      u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
-      void *address = VertexMeta->decoded_descriptors[i][j].addr;
-      // gpgpu_context *ctx = GPGPU_Context();
-      // CUctx_st *context = GPGPUSim_Context(ctx);
-      devPtr =
-          context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
-      context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
-                                                        size * sizeof(float));
-      // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
-      // print_memcpy("MemcpyVulkan",devPtr, size, 0);
-      if (VertexMeta->decoded_descriptors[i][j].is_texture) {
-        launcher_descriptorSets[i][j] = address;
-        launcher_deviceDescriptorSets[i][j] = address;
-        ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
-            devPtr;
-        ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
-            ->deviceAddress = devPtr;
-        print_memcpy("dumpTextures", devPtr, size, 0);
+  // for (unsigned i = 0; i < MAX_DESCRIPTOR_SETS; i++) {
+  //   for (unsigned j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++) {
+  //     if (VertexMeta->decoded_descriptors[i][j].addr == NULL) {
+  //       continue;
+  //     }
+  //     u_int32_t *devPtr;
+  //     u_int32_t size = VertexMeta->decoded_descriptors[i][j].size;
+  //     void *address = VertexMeta->decoded_descriptors[i][j].addr;
+  //     // gpgpu_context *ctx = GPGPU_Context();
+  //     // CUctx_st *context = GPGPUSim_Context(ctx);
+  //     devPtr =
+  //         context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+  //     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address,
+  //                                                       size * sizeof(float));
+  //     // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+  //     // print_memcpy("MemcpyVulkan",devPtr, size, 0);
+  //     if (VertexMeta->decoded_descriptors[i][j].is_texture) {
+  //       launcher_descriptorSets[i][j] = address;
+  //       launcher_deviceDescriptorSets[i][j] = address;
+  //       ((texture_metadata *)launcher_descriptorSets[i][j])->deviceAddress =
+  //           devPtr;
+  //       ((texture_metadata *)launcher_deviceDescriptorSets[i][j])
+  //           ->deviceAddress = devPtr;
+  //       print_memcpy("dumpTextures", devPtr, size, 0);
         
-      }
-    }
-  }
+  //     }
+  //   }
+  // }
 
   // set push constants
   print_memcpy("MemcpyVulkan",VertexMeta->constants_dev_addr, 1024, 0);
@@ -2245,12 +2295,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
 
   for (unsigned i = 0; i < FBO->thread_info_pixel.size(); i++) {
     // check if every pixel selected by rasterizer is shaded
-    if (!(FBO->fbo[FBO->thread_info_pixel[i] * 4] != 0 ||
-          FBO->fbo[FBO->thread_info_pixel[i] * 4 + 1] != 0 ||
-          FBO->fbo[FBO->thread_info_pixel[i] * 4 + 2] != 0 ||
-          FBO->fbo[FBO->thread_info_pixel[i] * 4 + 3] != 0)) {
-      assert(0);
-    } 
+    // if (!(FBO->fbo[FBO->thread_info_pixel[i] * 4] != 0 ||
+    //       FBO->fbo[FBO->thread_info_pixel[i] * 4 + 1] != 0 ||
+    //       FBO->fbo[FBO->thread_info_pixel[i] * 4 + 2] != 0 ||
+    //       FBO->fbo[FBO->thread_info_pixel[i] * 4 + 3] != 0)) {
+    //   assert(0);
+    // } 
     // else {
     //   printf("pixel %u written : [%f, %f, %f, %f]\n", i,
     //          FBO->fbo[FBO->thread_info_pixel[i] * 4],
@@ -2261,11 +2311,20 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   }
   FBO->thread_info_pixel.clear();
 
+  float *depthout = new float[FBO->fbo_count / 4];
+  for (unsigned i = 0; i < FBO->fbo_count / 4; i++) {
+    if (VertexMeta->DepthcmpOp == VK_COMPARE_OP_GREATER) {
+      depthout[i] = FBO->depthout[i];
+    } else {
+      depthout[i] = 1.0f - FBO->depthout[i];
+    }
+  }
+
   // save FBO and depth buffer to jpg
   std::string depth_file =
       mesa_root + "../fb/" + "depth_out_" + std::to_string(draw);
   fp = fopen((depth_file + ".bin").c_str(), "wb+");
-  fwrite(FBO->depthout, 1, FBO->fbo_size/4, fp);
+  fwrite(depthout, 1, FBO->fbo_size/4, fp);
   fclose(fp);
   std::string depth_cmd =
       "convert -depth 32 -size " + std::to_string(FBO->width) + "x" +
@@ -2273,6 +2332,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
       depth_file + ".jpg";
   system(depth_cmd.c_str());
   system(("rm " + depth_file + ".bin").c_str());
+  delete(depthout);
   printf("Drawcall #%u Done\n", draw);
 
   draw++;
@@ -2280,13 +2340,14 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
 //     delete[] VertexMeta->vertex_out[attrib.first];
 //   }
 //   delete(VertexMeta->push_constants);
-  delete(VertexMeta);
+  // delete(VertexMeta);
   // delete(FBO->fbo);
   // delete(FBO->depthout);
   
   VertexMeta = NULL;
-  draw_meta.pop_front();
-  context->get_device()->get_gpgpu()->identifier_addr.clear();
+  // draw_meta.pop_front();
+  context->get_device()->get_gpgpu()->valid_addr_start.clear();
+  context->get_device()->get_gpgpu()->valid_addr_end.clear();
   }
   
 }
@@ -2414,6 +2475,8 @@ void VulkanRayTracing::getFragCoord(uint32_t thread_id, uint32_t &x,
                                     uint32_t &y) {
   // get pixel coord
   if ((thread_id) >= VulkanRayTracing::thread_count) {
+    x = 0;
+    y = 0;
     return 0;
   }
 
@@ -2426,7 +2489,7 @@ uint64_t VulkanRayTracing::getConst() {
 }
 
 float VulkanRayTracing::getTexLOD(unsigned thread_id) {
-  if (thread_id > VulkanRayTracing::thread_count) {
+  if (thread_id >= VulkanRayTracing::thread_count) {
     return 0;
   }
     return FBO->thread_info_lod[thread_id];
@@ -2792,7 +2855,6 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
     if (true)
     // if (use_external_launcher)
     {
-        assert(launcher_deviceDescriptorSets[setID][binding] != NULL);
         return launcher_deviceDescriptorSets[setID][binding];
         // return launcher_descriptorSets[setID][binding];
     }
@@ -3085,6 +3147,13 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
     gpgpu_context *ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
     devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    context->get_device()
+        ->get_gpgpu()
+        ->valid_addr_start["vb" + std::to_string(setID)] = (uint64_t)devPtr;
+
+    context->get_device()
+        ->get_gpgpu()
+        ->valid_addr_end["vb" + std::to_string(setID)] = ((uint64_t)devPtr) + size;
     context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
     VertexMeta->vertex_addr[setID] = devPtr;
     // VertexMeta->vertex_size[setID] = size;
@@ -3126,17 +3195,19 @@ void VulkanRayTracing::dumpVertex(struct anv_buffer *vbuffer, struct anv_graphic
 
 void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t descID, uint32_t binding, VkDescriptorType type)
 {
-  return;
     anv_descriptor *desc_offset = ((anv_descriptor*)((void*)desc)); // offset for raytracing_extended
     struct anv_image_view *image_view =  desc_offset->image_view;
     struct anv_sampler *sampler = desc_offset->sampler;
+    if (!image_view) {
+      return;
+    }
 
     const struct anv_image *image = image_view->image;
     assert(image->n_planes == 1);
     assert(image->samples == 1);
     assert(image->tiling == VK_IMAGE_TILING_OPTIMAL);
     assert(image->planes[0].surface.isl.tiling == ISL_TILING_Y0);
-    assert(sampler->conversion == NULL);
+    // assert(sampler->conversion == NULL);
 
     uint8_t* address = anv_address_map(image->planes[0].address);
     uint32_t image_extent_width = image->extent.width;
@@ -3148,8 +3219,8 @@ void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID,
     texture_height = image_extent_height;
 
     VkFilter filter;
-    if(sampler->conversion == NULL)
-        filter = VK_FILTER_NEAREST;
+    // if(sampler->conversion == NULL)
+    filter = VK_FILTER_NEAREST;
 
     // Data to dump
     FILE *fp;
@@ -3203,22 +3274,28 @@ void VulkanRayTracing::dumpTextures(struct anv_descriptor *desc, uint32_t setID,
                                                  image->planes[0].surface.isl.row_pitch_B,
                                                  filter);
     fclose(fp);
-    // VertexMeta->decoded_descriptors[setID][descID].addr = address;
-    // VertexMeta->decoded_descriptors[setID][descID].size = size;
     
 
-    // u_int32_t *devPtr;
-    // gpgpu_context *ctx = GPGPU_Context();
-    // CUctx_st *context = GPGPUSim_Context(ctx);
-    // devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
-    // context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
+    u_int32_t *devPtr;
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size);
+    context->get_device()
+        ->get_gpgpu()
+        ->valid_addr_start["tex" + std::to_string(setID) +
+                           std::to_string(descID)] = (uint64_t)devPtr;
+    context->get_device()
+        ->get_gpgpu()
+        ->valid_addr_end["tex" + std::to_string(setID) +
+                           std::to_string(descID)] = ((uint64_t)devPtr) + size;
 
-    setTextureFromLauncher(address, NULL, setID, descID, size,
+    setTextureFromLauncher(address, devPtr, setID, descID, size,
                            image_extent_width, image_extent_height, format,
                            VkDescriptorTypeNum, image->n_planes, image->samples,
                            image->tiling, image->planes[0].surface.isl.tiling,
                            image->planes[0].surface.isl.row_pitch_B, filter, image->levels);
-    // print_memcpy("dumpTextures", devPtr, size, 0);
+    print_memcpy("dumpTextures", devPtr, size, 0);
 }
 
 
@@ -3446,21 +3523,20 @@ void VulkanRayTracing::dump_descriptor_set(uint32_t setID, uint32_t descID, void
     fp = fopen(fullPath, "wb+");
     fwrite(address, 1, size, fp);
     fclose(fp);
-    VertexMeta->decoded_descriptors[setID][descID].addr = address;
-    VertexMeta->decoded_descriptors[setID][descID].size = size;
+    // VertexMeta->decoded_descriptors[setID][descID].addr = address;
+    // VertexMeta->decoded_descriptors[setID][descID].size = size;
 
-    if (setID == 1 && descID == 0) {
-      printf("descriptor %p \n", address);
-    }
     
 
-    // u_int32_t *devPtr;
-    // gpgpu_context *ctx = GPGPU_Context();
-    // CUctx_st *context = GPGPUSim_Context(ctx);
-    // devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
-    // context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
-    // setDescriptorSetFromLauncher(address,devPtr,setID,descID);
-    // print_memcpy("MemcpyVulkan",devPtr, size, 0);
+    u_int32_t *devPtr;
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size * sizeof(float));
+    context->get_device()->get_gpgpu()->memcpy_to_gpu(devPtr, address, size * sizeof(float));
+    setDescriptorSetFromLauncher(address,devPtr,setID,descID);
+    context->get_device()->get_gpgpu()->valid_addr_start["desc" + std::to_string(setID) + std::to_string(descID)] = (uint64_t)devPtr;
+    context->get_device()->get_gpgpu()->valid_addr_end["desc" + std::to_string(setID) + std::to_string(descID)] =  ((uint64_t)devPtr) +  size * sizeof(float);
+    print_memcpy("MemcpyVulkan",devPtr, size, 0);
 }
 
 void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set, unsigned set_index) {
@@ -3497,6 +3573,9 @@ void VulkanRayTracing::dump_texture(struct anv_descriptor_set *set, unsigned set
 }
 
 void VulkanRayTracing::dump_texture(unsigned set_index, unsigned desc_index,  struct anv_descriptor *desc) {
+  if(!desc) {
+    return;
+  }
   switch (desc->type) {
     case VK_DESCRIPTOR_TYPE_SAMPLER:
     case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
@@ -3913,11 +3992,11 @@ void VulkanRayTracing::setTextureFromLauncher(void *address,
     texture->deviceAddress = deviceAddress;
     texture->mip_level = mip_level;
 
-    VertexMeta->decoded_descriptors[setID][descID].is_texture = true;
-    VertexMeta->decoded_descriptors[setID][descID].addr = (void*) texture;
-    VertexMeta->decoded_descriptors[setID][descID].size = size;
-    // launcher_descriptorSets[setID][descID] = (void*) texture;
-    // launcher_deviceDescriptorSets[setID][descID] = (void*) texture;
+    // VertexMeta->decoded_descriptors[setID][descID].is_texture = true;
+    // VertexMeta->decoded_descriptors[setID][descID].addr = (void*) texture;
+    // VertexMeta->decoded_descriptors[setID][descID].size = size;
+    launcher_descriptorSets[setID][descID] = (void*) texture;
+    launcher_deviceDescriptorSets[setID][descID] = (void*) texture;
 }
 
 void VulkanRayTracing::pass_child_addr(void *address)

@@ -92,24 +92,15 @@ typedef struct Vulkan_RT_thread_data {
     }
 
     unsigned attrib_index = -1;
+    if (name.find("\%draw_call") != std::string::npos) {
+      entry.address = VulkanRayTracing::getConst();
+    } else
     if (!VulkanRayTracing::is_FS) {
-      if (name.find("\%draw_call") != std::string::npos) {
-        entry.address = VulkanRayTracing::getConst();
-
-        context->get_device()->get_gpgpu()->identifier_addr["push_const"] =
-            "push_const";
-
-      } else
       if (identifier.find("VERT_ATTRIB_GENERIC") != std::string::npos) {
         // vertex shader input attributes
         assert(v.size() == 4);
         attrib_index = std::atoi(&v[2].back());
         entry.address = VulkanRayTracing::getVertexAddr(attrib_index, offset);
-
-        std::string attrib_name =
-            "VERT_ATTRIB_GENERIC" + std::to_string(attrib_index);
-        context->get_device()->get_gpgpu()->identifier_addr[attrib_name] =
-            identifier;
 
       } else if (identifier.find("VARYING_SLOT_POS") != std::string::npos) {
         assert(identifier.find("xyzw") != std::string::npos);
@@ -117,34 +108,41 @@ typedef struct Vulkan_RT_thread_data {
             VulkanRayTracing::VertexMeta->vertex_out_devptr.end()) {
           uint32_t* dev_ptr = context->get_device()->get_gpgpu()->gpu_malloc(
               VulkanRayTracing::thread_count * size);
+          context->get_device()
+              ->get_gpgpu()
+              ->valid_addr_start["VARYING_SLOT_POS_xyzw"] = (uint64_t)dev_ptr;
+          context->get_device()
+              ->get_gpgpu()
+              ->valid_addr_end["VARYING_SLOT_POS_xyzw"] =
+              ((uint64_t)dev_ptr) + VulkanRayTracing::thread_count * size;
           VulkanRayTracing::VertexMeta->vertex_out_devptr.insert(
               std::make_pair(name, dev_ptr));
           VulkanRayTracing::VertexMeta->vertex_id_map.insert(
               std::make_pair(identifier, name));
           VulkanRayTracing::VertexMeta->vertex_out_stride.insert(
               std::make_pair(name, size));
-          context->get_device()
-              ->get_gpgpu()
-              ->identifier_addr["VARYING_SLOT_POS"] = identifier;
         }
         entry.address = VulkanRayTracing::getVertexOutAddr(name, offset);
 
       } else if (identifier.find("VARYING_SLOT_VAR") != std::string::npos) {
         if (VulkanRayTracing::VertexMeta->vertex_out_devptr.find(name) ==
             VulkanRayTracing::VertexMeta->vertex_out_devptr.end()) {
+          attrib_index = std::atoi(&v[2].back());
+          std::string attrib_name =
+              "VARYING_SLOT_VAR" + std::to_string(attrib_index);
+
           uint32_t* dev_ptr = context->get_device()->get_gpgpu()->gpu_malloc(
               VulkanRayTracing::thread_count * size);
+          context->get_device()->get_gpgpu()->valid_addr_start[attrib_name] =
+              (uint64_t)dev_ptr;
+          context->get_device()->get_gpgpu()->valid_addr_end[attrib_name] =
+              ((uint64_t)dev_ptr) + VulkanRayTracing::thread_count * size;
           VulkanRayTracing::VertexMeta->vertex_out_devptr.insert(
               std::make_pair(name, dev_ptr));
           VulkanRayTracing::VertexMeta->vertex_id_map.insert(
               std::make_pair(identifier, name));
           VulkanRayTracing::VertexMeta->vertex_out_stride.insert(
               std::make_pair(name, size));
-          attrib_index = std::atoi(&v[2].back());
-          std::string attrib_name =
-              "VARYING_SLOT_VAR" + std::to_string(attrib_index);
-          context->get_device()->get_gpgpu()->identifier_addr[attrib_name] =
-              identifier;
         }
 
         entry.address = VulkanRayTracing::getVertexOutAddr(name, offset);
@@ -169,20 +167,12 @@ typedef struct Vulkan_RT_thread_data {
       } else */if (identifier.find("VARYING_SLOT_VAR") != std::string::npos) {
         assert(VulkanRayTracing::VertexMeta->vertex_id_map.find(identifier) !=
                VulkanRayTracing::VertexMeta->vertex_id_map.end());
-        
-        std::string attrib_name =
-            "VARYING_SLOT_VAR" + std::to_string(attrib_index);
-        context->get_device()->get_gpgpu()->identifier_addr[attrib_name] =
-            identifier;
         name = VulkanRayTracing::VertexMeta->vertex_id_map.at(identifier);
         attrib_index = std::atoi(&v[2].back());
 
         entry.address = VulkanRayTracing::getVertexOutAddr(name, offset);
       } else if (identifier.find("FRAG_RESULT_DATA0_xyzw") != std::string::npos) {
         entry.address = VulkanRayTracing::getFBOAddr(offset);
-        context->get_device()
-            ->get_gpgpu()
-            ->identifier_addr["FRAG_RESULT_DATA0"] = identifier;
       } else {
         assert(0);
       }

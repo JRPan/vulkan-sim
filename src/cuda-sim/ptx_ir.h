@@ -1066,7 +1066,7 @@ class ptx_instruction : public warp_inst_t {
   std::string to_string() const;
   unsigned inst_size() const { return m_inst_size; }
   unsigned uid() const { return m_uid; }
-  int get_opcode() const { return m_opcode; }
+  opcode_t get_opcode() const { return m_opcode; }
   const char *get_opcode_cstr() const {
     if (m_opcode != -1) {
       return g_opcode_string[m_opcode];
@@ -1254,7 +1254,7 @@ class ptx_instruction : public warp_inst_t {
   const symbol *m_pred;
   bool m_neg_pred;
   int m_pred_mod;
-  int m_opcode;
+  opcode_t m_opcode;
   const symbol *m_label;
   std::vector<operand_info> m_operands;
   operand_info m_return_var;
