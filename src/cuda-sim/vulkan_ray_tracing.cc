@@ -1435,6 +1435,11 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
   }
 
   draw_meta.push_back(VertexMeta);
+  // pbrtexture
+  // if (VertexMeta->viewports.width == 1280 && draw_meta.size() == 2) {
+  //   draw_meta.pop_front();
+  //   VulkanRayTracing::vkCmdDraw(NULL, 0, 0, 0, 0, 0);
+  // }
 }
 
 void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCount, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex) {
@@ -1459,6 +1464,10 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
       draw = 26;
     }
     if (draw == 80 && vulkan_app == "materials") {
+      draw = draw_meta.size();
+    }
+
+    if(draw == 2 && vulkan_app == "instancing") {
       draw = draw_meta.size();
     }
 
@@ -1761,20 +1770,20 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   std::string mesa_root = getenv("MESA_ROOT");
   std::string filePath = "../fb/depth_buffer/";
 
-  // app_id = INSTANCING;
-  // if (app_id == INSTANCING) {
-  //   unsigned size = 12;
-  //   std::string name = "\%inColor";
-  //   std::string identifier = "VARYING_SLOT_VAR1_xyz";
-  //   uint32_t *dev_ptr = context->get_device()->get_gpgpu()->gpu_malloc(
-  //       VulkanRayTracing::thread_count * size);
-  //   VulkanRayTracing::VertexMeta->vertex_out_devptr.insert(
-  //       std::make_pair(name, dev_ptr));
-  //   VulkanRayTracing::VertexMeta->vertex_id_map.insert(
-  //       std::make_pair(identifier, name));
-  //   VulkanRayTracing::VertexMeta->vertex_out_stride.insert(
-  //       std::make_pair(name, size));
-  // }
+
+  if (vulkan_app == "instancing") {
+    unsigned size = 12;
+    std::string name = "\%inColor";
+    std::string identifier = "VARYING_SLOT_VAR1_xyz";
+    uint32_t *dev_ptr = context->get_device()->get_gpgpu()->gpu_malloc(
+        VulkanRayTracing::thread_count * size);
+    VulkanRayTracing::VertexMeta->vertex_out_devptr.insert(
+        std::make_pair(name, dev_ptr));
+    VulkanRayTracing::VertexMeta->vertex_id_map.insert(
+        std::make_pair(identifier, name));
+    VulkanRayTracing::VertexMeta->vertex_out_stride.insert(
+        std::make_pair(name, size));
+  }
 
   for (auto out_attrib : VertexMeta->vertex_id_map) {
     std::string attrib_name = out_attrib.second;
@@ -1805,9 +1814,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
           VertexMeta->vertex_out_size.at(attrib_name));
     }
   }
-  // for (unsigned i = 0; i < VertexMeta->vertex_out_count["\%inColor"]; i++) {
-  //     VertexMeta->vertex_out.at("\%inColor")[i] = 1.0f;
-  // }
+
+  if (vulkan_app == "instancing") {
+    for (unsigned i = 0; i < VertexMeta->vertex_out_count["\%inColor"]; i++) {
+        VertexMeta->vertex_out.at("\%inColor")[i] = 1.0f;
+    }
+  }
 
 
   // vertex-post processing
@@ -1975,6 +1987,8 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
               continue;
             }
             break;
+          // case VK_COMPARE_OP_NEVER:
+            // break;
           default:
             printf("unsupported depth compare op\n");
             assert(0 && "unsupported depth compare op");
@@ -2135,7 +2149,24 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
   std::string tex_id = "UNDEFINED";
   if (VertexMeta->vertex_id_map.find("VARYING_SLOT_VAR3_xy") !=
       VertexMeta->vertex_id_map.end()) {
-    std::string tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR3_xy");
+    tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR3_xy");
+  }
+  else if (vulkan_app == "render_passes") {
+    tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR1_xy");
+  } 
+  else if (vulkan_app == "instancing") {
+    if (draw == 0)
+      tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR2_xy");
+    else
+      tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR2_xyz");
+  }
+  else if (vulkan_app == "pbrtexture") {
+    tex_id = VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR2_xy");
+  } else if (vulkan_app == "demo") {
+    printf("warning: undefined texture id\n");
+  }
+  else {
+    // assert(0 && "unknown texture id");
   }
   for (unsigned i = 0; i < FBO->thread_info_pixel.size(); i ++) {
     float lod = 0;

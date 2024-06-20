@@ -151,6 +151,10 @@ Pixel load_image_pixel(const struct anv_image *image, uint32_t x, uint32_t y, ui
     y = 0;
     unsigned max_lod = log2(width) - log2(16);
 
+    // if (lod > max_lod) {
+    //     lod = 0;
+    // }
+
     x = original_x / (pow(2, lod));
     if (lod > 1) {
         x += width / 2;

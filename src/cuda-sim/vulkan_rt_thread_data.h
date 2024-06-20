@@ -161,12 +161,26 @@ typedef struct Vulkan_RT_thread_data {
         entry.address = VulkanRayTracing::getVertexOutAddr(name, offset);
       }
     } else {
-      /*if (identifier.find("VARYING_SLOT_VAR0_xyzw") != std::string::npos){
-        entry.address = VulkanRayTracing::getVertexOutAddr("\%field0", offset);
+      // if (identifier.find("VARYING_SLOT_VAR0_xyzw") != std::string::npos){
+      //   entry.address = VulkanRayTracing::getVertexOutAddr("\%field0", offset);
+      // } else 
 
-      } else */if (identifier.find("VARYING_SLOT_VAR") != std::string::npos) {
+      // this is for pbrtexture only
+      // if (identifier.find("VARYING_SLOT_VAR3_xyzw") != std::string::npos){
+      //   name = VulkanRayTracing::VertexMeta->vertex_id_map.at("VARYING_SLOT_VAR3_xyz");
+      //   attrib_index = std::atoi(&v[2].back());
+      //   entry.address = VulkanRayTracing::getVertexOutAddr(name, offset);
+      // } else 
+      
+      if (identifier.find("VARYING_SLOT_VAR") != std::string::npos) {
         assert(VulkanRayTracing::VertexMeta->vertex_id_map.find(identifier) !=
                VulkanRayTracing::VertexMeta->vertex_id_map.end());
+        // if (VulkanRayTracing::VertexMeta->vertex_id_map.find(identifier) ==
+        //        VulkanRayTracing::VertexMeta->vertex_id_map.end()) {
+        //         printf("identifier: %s not found\n", identifier.c_str());
+        //         fflush(stdout);
+        //         assert(0);
+        //        }
         name = VulkanRayTracing::VertexMeta->vertex_id_map.at(identifier);
         attrib_index = std::atoi(&v[2].back());
 
