@@ -1367,9 +1367,14 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
   VertexMeta->pipeline = cmd_buffer->state.gfx.pipeline;
   assert(cmd_buffer->state.gfx.dynamic.viewport.count == 1);
   VertexMeta->viewports = *(cmd_buffer->state.gfx.dynamic.viewport.viewports);
-  // if (VertexMeta->viewports.width != 1152) {
-  //   return;
-  // }
+  char const *app_env = std::getenv("VULKAN_APP");
+  std::string vulkan_app(app_env);
+  if (vulkan_app == "demo" or vulkan_app == "materials" or
+      vulkan_app == "sponza" or vulkan_app == "platformer") {
+    if (VertexMeta->viewports.width != 1152) {
+      return;
+    }
+  }
   VertexMeta->push_constants = new float[128];
   memcpy(VertexMeta->push_constants,
          cmd_buffer->state.gfx.base.push_constants.client_data, 128 * 4);
@@ -1430,10 +1435,10 @@ void VulkanRayTracing::saveDraw(struct anv_cmd_buffer *cmd_buffer,
 
   draw_meta.push_back(VertexMeta);
   // pbrtexture
-  // if (VertexMeta->viewports.width == 1280 && draw_meta.size() == 2) {
-  //   draw_meta.pop_front();
-  //   VulkanRayTracing::vkCmdDraw(NULL, 0, 0, 0, 0, 0);
-  // }
+  if (VertexMeta->viewports.width == 1280 && draw_meta.size() == 2 && vulkan_app == "pbrtexture") {
+    draw_meta.pop_front();
+    VulkanRayTracing::vkCmdDraw(NULL, 0, 0, 0, 0, 0);
+  }
 }
 
 void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCount, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex) {
@@ -1494,10 +1499,12 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
     printf("render resolution: %u x %u\n", (unsigned) VertexMeta->viewports.width,(unsigned) VertexMeta->viewports.height);
     FBO->width = VertexMeta->viewports.width;
     FBO->height = VertexMeta->viewports.height;
-    FBO->width = 2560;
-    FBO->height = 1440;
+    // FBO->width = 2560;
+    // FBO->height = 1440;
     // FBO->width = 3840;
     // FBO->height = 2160;
+    FBO->width = 640;
+    FBO->height = 480;
     FBO->x = VertexMeta->viewports.x;
     FBO->y = VertexMeta->viewports.y;
     FBO->fbo_size = 4 * FBO->width * FBO->height * sizeof(float);

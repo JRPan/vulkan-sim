@@ -74,6 +74,11 @@ extern "C" void gpgpusim_vkCmdTraceRaysKHR(
 }
 
 extern "C" void gpgpusim_vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned VertexCountPerInstance, unsigned StartVertex, unsigned instanceCount, unsigned StartInstance, unsigned BaseVertex) {
+    char const *app_env = std::getenv("VULKAN_APP");
+  std::string vulkan_app(app_env);
+  if (vulkan_app == "pbrtexture") {
+    return;
+  }
   VulkanRayTracing::invoke_gpgpusim();
   VulkanRayTracing::vkCmdDraw(cmd_buffer, VertexCountPerInstance, StartVertex, instanceCount, StartInstance, BaseVertex);
 }
