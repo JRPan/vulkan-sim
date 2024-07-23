@@ -219,13 +219,6 @@ typedef struct vertex_metadata
     uint32_t vertex_size[MAX_VERTEX] = {0};
     uint32_t vertex_count[MAX_VERTEX] = {0};
     uint32_t vertex_stride[MAX_VERTEX] = {0};
-    // vertex shader out data
-    // float* vertex_out[MAX_VERTEX]  = {NULL};
-    // *device* addr of vertex shader output
-    // uint32_t* vertex_out_devptr[MAX_VERTEX] = {NULL};
-    // uint32_t vertex_out_size[MAX_VERTEX] = {0};
-    // uint32_t vertex_out_count[MAX_VERTEX] = {0};
-    // uint32_t vertex_out_stride[MAX_VERTEX] = {0};
 
     struct anv_buffer* index_buffer = NULL;
     VkIndexType index_type = VK_INDEX_TYPE_MAX_ENUM;
