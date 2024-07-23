@@ -2123,49 +2123,7 @@ void VulkanRayTracing::vkCmdDraw(struct anv_cmd_buffer *cmd_buffer, unsigned Ver
                                                       FBO->fbo_size);
   }
 
-  uint8_t *out = new uint8_t[FBO->fbo_count];
-  for (unsigned i = 0; i < FBO->fbo_count; i += 4) {
-    out[i] = linearRGB_to_SRGB(FBO->fbo[i]) * 255;
-    out[i + 1] = linearRGB_to_SRGB(FBO->fbo[i + 1]) * 255;
-    out[i + 2] = linearRGB_to_SRGB(FBO->fbo[i + 2]) * 255;
-    out[i + 3] = linearRGB_to_SRGB(FBO->fbo[i + 3]) * 255;
-  }
-  std::string fbo_file =
-      mesa_root + "../fb/" + "fbo_out_" + std::to_string(draw);
-  fp = fopen((fbo_file + ".bin").c_str(), "wb+");
-  fwrite(out, 1, FBO->fbo_size/4, fp);
-  fclose(fp);
-  delete[](out);
-  std::string fbo_cmd = "convert -depth 8 -size " + std::to_string(FBO->width) +
-                        "x" + std::to_string(FBO->height) +
-                        "+0 rgba:" + fbo_file + ".bin " + fbo_file + ".jpg";
-  system(fbo_cmd.c_str());
-  system(("rm " + fbo_file + ".bin").c_str());
-
   FBO->thread_info_pixel.clear();
-
-  float *depthout = new float[FBO->fbo_count / 4];
-  for (unsigned i = 0; i < FBO->fbo_count / 4; i++) {
-    if (VertexMeta->DepthcmpOp == VK_COMPARE_OP_GREATER) {
-      depthout[i] = FBO->depthout[i];
-    } else {
-      depthout[i] = 1.0f - FBO->depthout[i];
-    }
-  }
-
-  // save FBO and depth buffer to jpg
-  std::string depth_file =
-      mesa_root + "../fb/" + "depth_out_" + std::to_string(draw);
-  fp = fopen((depth_file + ".bin").c_str(), "wb+");
-  fwrite(depthout, 1, FBO->fbo_size/4, fp);
-  fclose(fp);
-  std::string depth_cmd =
-      "convert -depth 32 -size " + std::to_string(FBO->width) + "x" +
-      std::to_string(FBO->height) + "+0 gray:" + depth_file + ".bin " +
-      depth_file + ".jpg";
-  system(depth_cmd.c_str());
-  system(("rm " + depth_file + ".bin").c_str());
-  delete(depthout);
   printf("Drawcall #%u Done\n", draw);
 
   draw++;
