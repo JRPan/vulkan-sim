@@ -180,4 +180,35 @@ extern "C" void* gpgpusim_allocBuffer(void* bufferAddr, uint64_t bufferSize)
     return VulkanRayTracing::allocBuffer(bufferAddr, bufferSize);
 }
 
+extern "C" void gpgpusim_vkCmdDraw() {
+    VulkanRayTracing::invoke_gpgpusim();
+    VulkanRayTracing::vkCmdDraw();
+}
+
+extern "C" void gpgpusim_bindVertex(unsigned index, float *addr, unsigned size, unsigned stride) {
+    VulkanRayTracing::bindVertex(index, addr, size, stride);
+}
+
+extern "C" void gpgpusim_saveIndexBuffer(void *ptr, unsigned index_size, unsigned buf_size) {
+    VulkanRayTracing::saveIndexBuffer(ptr, index_size, buf_size);
+
+}
+
+extern "C" void gpgpusim_saveVertexInfo(unsigned location, unsigned binding, unsigned offset, unsigned rate) {
+    VulkanRayTracing::saveVertexInfo(location, binding, offset, rate);
+}
+
+extern "C" void gpgpusim_saveInstance(unsigned instanceCount, unsigned startInstance) {
+    VulkanRayTracing::saveInstance(instanceCount, startInstance);
+}
+
+extern "C" void  gpgpusim_saveUBO(unsigned stage, unsigned index, unsigned offset, unsigned size, void *addr) {
+    VulkanRayTracing::saveUBO(stage, index, offset, size, addr);
+
+}
+
+extern "C" void  gpgpusim_savePipeCtx(void *ctx) {
+    VulkanRayTracing::savePipeCtx(ctx);
+}
+
 #endif /* GPGPUSIM_CALLS_FROM_MESA_CC */

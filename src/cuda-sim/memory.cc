@@ -59,7 +59,7 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
                                      const void *data,
                                      class ptx_thread_info *thd,
                                      const ptx_instruction *pI) {
-  if(!use_external_launcher) {
+  if(!use_external_launcher && !VulkanRayTracing::use_CRISP) {
     void* vulkan_addr = find_vulkan_buffer(addr);
 
     if (vulkan_addr) {
@@ -163,6 +163,9 @@ template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
                                     void *data) const {
   if(!use_external_launcher) {
+    if (VulkanRayTracing::use_CRISP && addr == 0) {
+      return; //extra threads
+    }
     void* vulkan_addr = find_vulkan_buffer(addr);
 
     if (vulkan_addr) {
@@ -205,6 +208,41 @@ void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
     }
   }
 }
+
+template <unsigned BSIZE>
+void memory_space_impl<BSIZE>::read_from_gpu(mem_addr_t addr, size_t length,
+                                    void *data) const {
+  mem_addr_t index = addr >> m_log2_block_size;
+  if ((addr + length) <= (index + 1) * BSIZE) {
+    // fast route for intra-block access
+    read_single_block(index, addr, length, data);
+  } else {
+    // slow route for inter-block access
+    unsigned nbytes_remain = length;
+    unsigned dst_offset = 0;
+    mem_addr_t current_addr = addr;
+
+    while (nbytes_remain > 0) {
+      unsigned offset = current_addr & (BSIZE - 1);
+      mem_addr_t page = current_addr >> m_log2_block_size;
+      mem_addr_t access_limit = offset + nbytes_remain;
+      if (access_limit > BSIZE) {
+        access_limit = BSIZE;
+      }
+
+      size_t tx_bytes = access_limit - offset;
+      read_single_block(page, current_addr, tx_bytes,
+                        &((unsigned char *)data)[dst_offset]);
+
+      // advance pointers
+      dst_offset += tx_bytes;
+      current_addr += tx_bytes;
+      nbytes_remain -= tx_bytes;
+    }
+    assert(nbytes_remain == 0);
+  }
+}
+
 
 template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::print(const char *format, FILE *fout) const {

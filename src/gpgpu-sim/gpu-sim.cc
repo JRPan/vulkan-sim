@@ -959,6 +959,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   // Jin: functional simulation for CDP
   m_functional_sim = false;
   m_functional_sim_kernel = NULL;
+  gtrace.open("traces.traceg");
 }
 
 int gpgpu_sim::shared_mem_size() const {
@@ -1805,6 +1806,13 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
         m_config->n_thread_per_shader, this, free_cta_hw_id, warp_id,
         m_cluster->get_gpu());
     m_threadState[i].m_active = true;
+    // unsigned global_tid = m_thread[i]->get_thread_id();
+    // if (m_gpu->vb_deactive.find(global_tid) !=
+    //     m_gpu->vb_deactive.end()) {
+    //   m_thread[i]->set_done();
+    //   m_thread[i]->exitCore();
+    //   m_thread[i]->registerExit();
+    // }
     // load thread local memory and register file
     if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
         ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {

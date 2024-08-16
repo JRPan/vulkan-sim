@@ -118,12 +118,27 @@ void* VulkanRayTracing::tlas_addr;
 bool VulkanRayTracing::dumped = false;
 
 bool use_external_launcher = false;
+
 const bool dump_trace = false;
 
 bool VulkanRayTracing::_init_ = false;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
 warp_intersection_table *** VulkanRayTracing::anyhit_table;
 IntersectionTableType VulkanRayTracing::intersectionTableType = IntersectionTableType::Baseline;
+
+struct vertex_metadata* VulkanRayTracing::VertexMeta = new struct vertex_metadata;
+struct FBO* VulkanRayTracing::FBO = new struct FBO;
+bool VulkanRayTracing::is_FS = false;
+bool VulkanRayTracing::use_CRISP = true;
+unsigned VulkanRayTracing::draw = 0;
+unsigned VulkanRayTracing::thread_count = 0;
+std::unordered_map<void *, unsigned> VulkanRayTracing::pipeline_shader_map;
+std::unordered_map<void *, struct VertexAttrib *>
+    VulkanRayTracing::pipeline_vertex_map;
+std::deque<struct vertex_metadata* > VulkanRayTracing::draw_meta;
+std::mutex VulkanRayTracing::mtx;
+unsigned VulkanRayTracing::batch_index = 0;
+unsigned VulkanRayTracing::batch_size = 0;
 
 float get_norm(float4 v)
 {
@@ -1358,6 +1373,20 @@ uint32_t VulkanRayTracing::registerShaders(char * shaderPath, gl_shader_stage sh
             deviceFunction = "";
             assert(0);
             break;
+        case MESA_SHADER_VERTEX:
+            // shader.function_name = "callable_" + std::to_string(shader.ID);
+            strcpy(shader.function_name, "vertex");
+            strcat(shader.function_name, std::to_string(shader.ID).c_str());
+            deviceFunction = "MESA_SHADER_VERTEX";
+            break;
+        case MESA_SHADER_FRAGMENT:
+            // shader.function_name = "callable_" + std::to_string(shader.ID);
+            strcpy(shader.function_name, "frag");
+            strcat(shader.function_name, std::to_string(shader.ID).c_str());
+            deviceFunction = "MESA_SHADER_FRAGMENT";
+            break;
+        default:
+            assert(0);
     }
     deviceFunction += "_func" + std::to_string(shader.ID) + "_main";
     // deviceFunction += "_main";
@@ -2032,6 +2061,11 @@ void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
     uint32_t height = img->vk.extent.height;
     void *i = img->pmem;
 
+    for (unsigned i = 0; i < lod; i++) {
+        width /= 2;
+        height /=2 ;
+    }
+
     uint32_t x_int = std::floor(x * width);
     uint32_t y_int = std::floor(y * height);
     if(x_int >= width)
@@ -2052,6 +2086,20 @@ void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
     c1 = colors[1] / 255.0;
     c2 = colors[2] / 255.0;
     c3 = colors[3] / 255.0;
+
+    struct pipe_resource *texture =d.info.sampler_view->texture;
+    const struct llvmpipe_resource *lpr = (const struct llvmpipe_resource *) texture;
+    assert(width * 4 == lpr->row_stride[(unsigned) lod]);
+    unsigned offset = lpr->mip_offsets[(unsigned) lod];
+    offset += (y_int * height + x_int) * 4;
+
+    unsigned rgba[4];
+    // Assuming the format is RGBA8
+    uint8_t *data = lpr->tex_data + offset;
+    c0 = SRGB_to_linearRGB(data[0] / 255.0);  // R
+    c1 = SRGB_to_linearRGB(data[1] / 255.0);  // G
+    c2 = SRGB_to_linearRGB(data[2] / 255.0);  // B
+    c3 = SRGB_to_linearRGB(data[3] / 255.0);  // A
 
     // abort();
 #endif
@@ -2954,7 +3002,831 @@ void* VulkanRayTracing::allocBuffer(void* bufferAddr, uint64_t bufferSize)
     memory_space *mem = context->get_device()->get_gpgpu()->get_global_memory();
     
     printf("gpgpusim: binding gpgpusim buffer %p (size %d) to vulkan buffer %p\n", devPtr, bufferSize, bufferAddr);
+    std::lock_guard<std::mutex> lock(mtx);
     mem->bind_vulkan_buffer(bufferAddr, bufferSize, devPtr);
     return devPtr;
 }
 
+bool SKIP_VS = false;
+bool SKIP_FS = true;
+
+unsigned tile_size = 8;
+
+void VulkanRayTracing::vkCmdDraw() {
+  gpgpu_context *ctx = GPGPU_Context();
+  ctx->device_runtime->g_max_sim_rt_kernels = 0;
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  gpgpu_sim *m_gpu = context->get_device()->get_gpgpu();
+  FILE *fp;
+
+  // manually set everything now
+  VertexMeta->viewports.width = 1280;
+  VertexMeta->viewports.height = 720;
+  VertexMeta->viewports.x = 0;
+  VertexMeta->viewports.y = 0;
+  VertexMeta->DepthcmpOp = 4;
+  VertexMeta->viewports.minDepth = 0.0;
+  VertexMeta->viewports.maxDepth = 1.0;
+
+  // create fbo
+  printf("Starting Drawcall #%u\n", draw);
+
+  if (!FBO->fbo) {
+    printf("render resolution: %u x %u\n", (unsigned) VertexMeta->viewports.width,(unsigned) VertexMeta->viewports.height);
+    FBO->width = VertexMeta->viewports.width;
+    FBO->height = VertexMeta->viewports.height;
+    FBO->x = VertexMeta->viewports.x;
+    FBO->y = VertexMeta->viewports.y;
+    FBO->fbo_size = 4 * FBO->width * FBO->height * sizeof(float);
+    FBO->fbo_count = 4 * FBO->width * FBO->height;
+    FBO->fbo_stride = 16;
+    FBO->fbo = new float[FBO->fbo_count]{0};
+    FBO->depthout = new float[FBO->fbo_count / 4];
+    for (unsigned i = 0; i < FBO->fbo_count / 4; i ++) {
+      if (VertexMeta->DepthcmpOp == VK_COMPARE_OP_GREATER) {
+        FBO->depthout[i] = (float) VertexMeta->viewports.minDepth;
+      } else if (VertexMeta->DepthcmpOp == VK_COMPARE_OP_LESS ||
+                  VertexMeta->DepthcmpOp == VK_COMPARE_OP_LESS_OR_EQUAL) {
+        FBO->depthout[i] = (float) VertexMeta->viewports.maxDepth;
+      } else {
+        assert(0 && "unsupported depth compare op");
+      }
+      
+    }
+    FBO->fbo_dev = 0xF0000000;
+    // context->get_device()
+    //   ->get_gpgpu()
+    //   ->valid_addr_start["fbo_dev"] = (uint64_t) FBO->fbo_dev;
+    // context->get_device()
+    //   ->get_gpgpu()
+    //   ->valid_addr_end["fbo_dev"] = (uint64_t) FBO->fbo_dev + FBO->fbo_size;
+
+  }
+  assert(FBO->fbo);
+  assert(FBO->depthout);
+  assert(FBO->fbo_dev);
+  VertexMeta->target_sm.resize(16);
+
+  if (VertexMeta->index_size = sizeof(u_int16_t)) {
+    if (((u_int16_t*) VertexMeta->index_buffer)[0] == ((u_int16_t*) VertexMeta->index_buffer)[1] &&
+        ((u_int16_t*) VertexMeta->index_buffer)[1] == ((u_int16_t*) VertexMeta->index_buffer)[2] && 
+        ((u_int16_t*) VertexMeta->index_buffer)[0] == 0) {
+      assert(0 && "empty index buffer");
+    }
+  } else if (VertexMeta->index_size = sizeof(u_int32_t)) {
+    if (((u_int32_t*) VertexMeta->index_buffer)[0] == ((u_int32_t*) VertexMeta->index_buffer)[1] &&
+        ((u_int32_t*) VertexMeta->index_buffer)[1] == ((u_int32_t*) VertexMeta->index_buffer)[2] && 
+        ((u_int32_t*) VertexMeta->index_buffer)[0] == 0) {
+      assert(0 && "empty index buffer");
+    }
+  } else {
+    // add your type
+    printf("unsupported index type\n");
+    assert(0 && "unsupported index type");
+  }
+
+  unsigned index_count = VertexMeta->index_buf_size / VertexMeta->index_size;
+  assert(index_count % 3 == 0);
+  unsigned index = 0;
+  unsigned batch_start = 0;
+  batch_index = 0;
+  batch_size = 96;
+  std::vector<unsigned> uniq_vertex;  // unique vertex in this batch
+  std::vector<unsigned> batch_prim;   // primitives in this batch
+  std::set<unsigned> batch_set;       // test if vertex is already in batch
+  std::unordered_map<unsigned, unsigned>
+      idx_to_tid;  // index to thread id per batch
+
+  while (index < index_count) {
+    bool skip = false;
+    unsigned j = 0;
+    // printf("start index: %u\n", index);
+    std::vector<unsigned> tmp_batch;
+    std::vector<unsigned> tmp_batch_prim;
+    for (; j < 3; j++) {
+      unsigned vertex;
+      if (VertexMeta->index_size == 4) {
+        vertex = ((u_int32_t *)VertexMeta->index_buffer)[index + j];
+      } else if (VertexMeta->index_size == 2) {
+        vertex = ((u_int16_t *)VertexMeta->index_buffer)[index + j];
+      }
+      if (batch_set.find(vertex) ==
+          batch_set.end()) {
+        batch_set.insert(vertex);
+        tmp_batch.push_back(vertex);
+      }
+      tmp_batch_prim.push_back(vertex);
+      if (batch_set.size() > 32) {
+        skip = true;
+        break;
+      }
+    }
+    if (!skip) {
+      index += 3;
+      for (auto vertex : tmp_batch) {
+        uniq_vertex.push_back(vertex);
+        idx_to_tid.insert(
+            std::make_pair(vertex, VertexMeta->vb.size()));
+        VertexMeta->vb.push_back(vertex);
+      }
+      for (auto vertex : tmp_batch_prim) {
+        batch_prim.push_back(vertex);
+      }
+    } else {
+      
+    }
+    if ((index - batch_start) % batch_size == 0 ||
+        batch_set.size() == 32 || 
+        skip) {
+      while(uniq_vertex.size() < 32) {
+        m_gpu->vb_deactive.insert(VertexMeta->vb.size());
+        VertexMeta->vb_deactive.insert(VertexMeta->vb.size());
+        uniq_vertex.push_back(-1);
+        VertexMeta->vb.push_back(-1);
+      }
+      batch_set.clear();
+      batch_start = index;
+      VertexMeta->batched_prim.push_back(batch_prim);
+      VertexMeta->batched_idx_to_tid.push_back(idx_to_tid);
+      uniq_vertex.clear();
+      batch_prim.clear();
+      idx_to_tid.clear();
+    }
+  }
+
+  thread_count = VertexMeta->vb.size();
+
+  printf("total vertex count: %u\n", (unsigned)thread_count);
+  is_FS = false;
+  run_shader(draw * 2, thread_count);
+
+  post_vertex();
+
+  if (VertexMeta->attribs.empty()) {
+    cleanup();
+    return;
+  }
+
+  pre_frag();
+  genLoD();
+  for (auto attrib : VertexMeta->vertex_out_devptr) {
+    std::string index = attrib.first;
+    // allocate gpu memory
+
+    void *dev_ptr = allocBuffer(VertexMeta->vertex_out.at(index),
+                    VertexMeta->vertex_out_size.at(index));
+
+    VertexMeta->vertex_out_devptr.at(index) = dev_ptr;
+
+    // context->get_device()->get_gpgpu()->valid_addr_start[index] =
+    //     (uint64_t)dev_ptr;
+    
+    // context->get_device()->get_gpgpu()->valid_addr_end[index] =
+    //     ((uint64_t)dev_ptr) + VertexMeta->vertex_out_size.at(index);
+    
+    // print_memcpy("MemcpyVulkan", VertexMeta->vertex_out_devptr.at(index),
+    //              VertexMeta->vertex_out_size.at(index),
+    //              VertexMeta->vertex_out_stride.at(index) * block_size);
+  }
+
+  thread_count = VertexMeta->thread_info_pixel.size();
+  is_FS = true;
+  run_shader(draw * 2 + 1, thread_count);
+
+  dumpFBO();
+  cleanup();
+}
+uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
+                                         uint32_t tid) {
+  // instancing (multiple vertex attributes in one vertex buffer)
+  // assert(buffer_index < VertexMeta->VertexAttrib->binding.size());
+  unsigned loc = -1;
+  for (unsigned i = 0; i < VertexMeta->VertexAttrib->location.size(); i++) {
+    if (buffer_index == VertexMeta->VertexAttrib->location[i]) {
+      loc = i;
+      break;
+    }
+  }
+  assert(loc != -1);
+  assert(buffer_index == VertexMeta->VertexAttrib->location[loc]);
+  unsigned binding = VertexMeta->VertexAttrib->binding[loc];
+  unsigned attrib_stride = VertexMeta->VertexAttrib->offset[loc];
+
+  unsigned instance = tid / VertexMeta->vb.size();
+  unsigned index = tid % VertexMeta->vb.size();
+  if (tid >= VulkanRayTracing::thread_count) {
+    // out of range
+    return 0;
+  }
+  if (VertexMeta->vb_deactive.find(index) != VertexMeta->vb_deactive.end()) {
+    return 0;
+  }
+  unsigned offset = 0;
+  assert (VertexMeta->vb[index] != (unsigned)-1);
+  if (VertexMeta->VertexAttrib->rate[binding] == VK_VERTEX_INPUT_RATE_VERTEX) {
+    offset = VertexMeta->vb[index] * VertexMeta->vertex_stride[binding] / 4;
+    assert(offset < VertexMeta->vertex_count[binding] * 1);
+  } else if (VertexMeta->VertexAttrib->rate[binding] == VK_VERTEX_INPUT_RATE_INSTANCE) {
+    offset = instance * VertexMeta->vertex_stride[binding] / 4;
+    assert(offset < VertexMeta->vertex_count[binding]);
+  }
+  return VertexMeta->vertex_addr[binding] + offset + attrib_stride / 4;
+}
+
+uint64_t VulkanRayTracing::getVertexOutAddr(std::string index,
+                                            uint32_t tid) {
+  unsigned offset = (tid) * VertexMeta->vertex_out_stride.at(index) / 4;
+  if (tid >= VulkanRayTracing::thread_count) {
+    // out of range
+    return 0;
+  }
+  return VertexMeta->vertex_out_devptr.at(index) + offset;
+}
+
+uint64_t VulkanRayTracing::getFBOAddr(uint32_t tid) {
+  // get pixel coord
+  if((tid) >= VulkanRayTracing::thread_count) {
+    return 0;
+  }
+  assert((VertexMeta->thread_info_pixel[tid] * 4) < FBO->fbo_count);
+  return FBO->fbo_dev + VertexMeta->thread_info_pixel[tid] * 4;
+}
+
+void VulkanRayTracing::getFragCoord(uint32_t thread_id, uint32_t &x,
+                                    uint32_t &y) {
+  // get pixel coord
+  if ((thread_id) >= VulkanRayTracing::thread_count) {
+    x = 0;
+    y = 0;
+    return 0;
+  }
+
+  x = VertexMeta->thread_info_pixel[thread_id] % FBO->width;
+  y = VertexMeta->thread_info_pixel[thread_id] / FBO->width;
+}
+
+uint64_t VulkanRayTracing::getConst() {
+    return VertexMeta->constants_dev_addr;
+}
+
+float VulkanRayTracing::getTexLOD(unsigned thread_id) {
+  if (thread_id >= VulkanRayTracing::thread_count) {
+    return 0;
+  }
+    return FBO->thread_info_lod[thread_id];
+}
+
+unsigned block_size = 32;
+void VulkanRayTracing::run_shader(unsigned shader_id, unsigned thread_count) {
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+
+  shader_stage_info shader = VulkanRayTracing::shaders[shader_id];
+  function_info *entry = context->get_kernel(shader.function_name);
+
+  if (entry->is_pdom_set()) {
+    printf("GPGPU-Sim PTX: PDOM analysis already done for %s \n",
+           entry->get_name().c_str());
+  } else {
+    printf("GPGPU-Sim PTX: finding reconvergence points for \'%s\'...\n",
+           entry->get_name().c_str());
+    /*
+     * Some of the instructions like printf() gives the gpgpusim the wrong
+     * impression that it is a function call. As printf() doesnt have a body
+     * like functions do, doing pdom analysis for printf() causes a crash.
+     */
+    if (entry->get_function_size() > 0) entry->do_pdom();
+    entry->set_pdom();
+  }
+  unsigned block_count = (thread_count + block_size - 1) / block_size;
+//   unsigned block_count = 16 * 16;
+  context->get_device()->get_gpgpu()->gtrace << "block_dim, " << block_size << std::endl;
+  dim3 blockDim = dim3(block_size, 1, 1);
+  dim3 gridDim = dim3(block_count, 1, 1);
+  gpgpu_ptx_sim_arg_list_t args;
+  kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
+      shader.function_name, args, gridDim, blockDim, context);
+
+  struct CUstream_st *stream = 0;
+
+  stream_operation op(grid, ctx->func_sim->g_ptx_sim_mode, stream);
+  ctx->the_gpgpusim->g_stream_manager->push(op);
+
+  fflush(stdout);
+
+  while (!op.is_done() && !op.get_kernel()->done()) {
+    printf("waiting for op to finish\n");
+    sleep(1);
+    continue;
+  }
+}
+
+void VulkanRayTracing::bindVertex(unsigned index, float *addr, unsigned size, unsigned stride) {
+  assert(VertexMeta);
+  VertexMeta->vertex_buffers[index] = addr;
+  VertexMeta->vertex_count[index] = size / 4;
+  VertexMeta->vertex_stride[index] = stride;
+  VertexMeta->vertex_size[index] = size;
+
+  u_int32_t *devPtr;
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  gpgpu_sim *m_gpu = context->get_device()->get_gpgpu();
+  devPtr = allocBuffer(addr, size);
+
+  // m_gpu->valid_addr_start["vb" + std::to_string(index)] = (uint64_t)devPtr;
+  // m_gpu->valid_addr_end["vb" + std::to_string(index)] =
+  //     ((uint64_t)devPtr) + size;
+  // m_gpu->memcpy_to_gpu(devPtr, addr, size);
+  VertexMeta->vertex_addr[index] = devPtr;
+}
+
+void VulkanRayTracing::saveIndexBuffer(void *ptr, unsigned index_size, unsigned buf_size) {
+  assert(VertexMeta);
+  VertexMeta->index_buffer = ptr;
+  VertexMeta->index_size = index_size;
+  VertexMeta->index_buf_size = buf_size;
+}
+
+void VulkanRayTracing::saveVertexInfo(unsigned location, unsigned binding, unsigned offset, unsigned rate) {
+  assert(VertexMeta);
+  if (VertexMeta->VertexAttrib == NULL) {
+    struct VertexAttrib *va = new struct VertexAttrib;
+    VertexMeta->VertexAttrib = va;
+  }
+  VertexMeta->VertexAttrib->location.push_back(location);
+  VertexMeta->VertexAttrib->binding.push_back(binding);
+  VertexMeta->VertexAttrib->offset.push_back(offset);
+  VertexMeta->VertexAttrib->rate.push_back(rate);
+}
+
+void VulkanRayTracing::saveInstance(unsigned instanceCount, unsigned startInstance) {
+  assert(VertexMeta);
+  VertexMeta->InstanceCount = instanceCount;
+  VertexMeta->StartInstanceLocation = startInstance;
+}
+
+void VulkanRayTracing::savePipeCtx(void *pipe) {
+    assert(VertexMeta);
+    VertexMeta->pipe = (struct pipe_context *) pipe;
+}
+
+void VulkanRayTracing::saveUBO(pipe_shader_type stage, unsigned index, unsigned offset, unsigned size, void *addr) {
+    assert(VertexMeta);
+    VertexMeta->ubo_offset[stage][index] = offset;
+    VertexMeta->ubo_size[stage][index] = size;
+    VertexMeta->ubo_addr[stage][index] = addr;
+
+    void *devPtr = allocBuffer(addr + offset, size);
+    VertexMeta->ubo_addr_dev[stage][index] = devPtr;
+
+}
+
+addr_t VulkanRayTracing::getUBOAddr(unsigned index, unsigned offset) {
+  pipe_shader_type stage;
+  if (is_FS) {
+    stage = MESA_SHADER_FRAGMENT;
+  } else {
+    stage = MESA_SHADER_VERTEX;
+  } 
+  addr_t addr =
+      VertexMeta->ubo_addr_dev[stage][index];
+  addr = addr + offset;
+  assert(offset < VertexMeta->ubo_size[stage][index]);
+  return addr;
+}
+
+std::string gl_position = "VARYING_SLOT_POS_xyzw";
+void VulkanRayTracing::post_vertex() {
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  gpgpu_sim *m_gpu = context->get_device()->get_gpgpu();
+
+  for (auto out_attribute : VertexMeta->vertex_out_devptr) {
+    std::string index = out_attribute.first;
+    unsigned stride = VertexMeta->vertex_out_stride.at(index);
+    unsigned count = stride / 4 * thread_count;
+    unsigned size = stride * thread_count;
+    VertexMeta->vertex_out_count.insert({index, count});
+    VertexMeta->vertex_out_size.insert({index, size});
+    float *buf = new float[count];
+    assert(size == count * 4);
+    m_gpu->memcpy_from_gpu(buf, out_attribute.second, size);
+    VertexMeta->vertex_out.insert(std::make_pair(index, buf));
+  }
+
+  for (unsigned i = 0; i < VertexMeta->vertex_out_count.at(gl_position);
+       i += 4) {
+    // transform to NDC space
+    std::vector<float> ndc;
+    std::vector<float> view;
+    std::vector<float> raw;
+    float *buf = VertexMeta->vertex_out.at(gl_position);
+    float ndc_x = (buf[i] / buf[i + 3]);
+    ndc.push_back(ndc_x);
+    float ndc_y = (buf[i + 1] / buf[i + 3]);
+    ndc.push_back(ndc_y);
+    float ndc_z = (buf[i + 2] / buf[i + 3]);
+    ndc.push_back(ndc_z);
+    float ndc_w = (buf[i + 3] / buf[i + 3]);
+    ndc.push_back(ndc_w);
+    VertexMeta->vertex_ndc.push_back(ndc);
+
+    // X = (X + 1) * Viewport.Width * 0.5 + Viewport.TopLeftX
+    // Y = (1 - Y) * Viewport.Height * 0.5 + Viewport.TopLeftY (actually no)
+    // Z = Viewport.MinDepth + Z * (Viewport.MaxDepth - Viewport.MinDepth)
+    float screen_x = (ndc_x + 1) * (FBO->width / 2) + FBO->x;
+    float screen_y = (ndc_y + 1) * (FBO->height / 2) + FBO->y;
+    float screen_z = 0.0f + ndc_z * (1.0f - 0.0f);
+    view.push_back(screen_x);
+    view.push_back(screen_y);
+    view.push_back(screen_z);
+    view.push_back(ndc_w);
+    VertexMeta->vertex_screen.push_back(view);
+
+    // assert(!isnan(buf[i]));
+    raw.push_back(buf[i]);
+    raw.push_back(buf[i + 1]);
+    raw.push_back(buf[i + 2]);
+    raw.push_back(buf[i + 3]);
+    VertexMeta->vertex_raw.push_back(raw);
+  }
+  assert(VertexMeta->vertex_screen.size() == thread_count);
+  assert(VertexMeta->vertex_ndc.size() == thread_count);
+
+  // Assemble into triangles using index buffer
+
+  assert(VertexMeta->batched_prim.size() ==
+         VertexMeta->batched_idx_to_tid.size());
+  unsigned count = 0;
+  for (unsigned batch_index = 0; batch_index < VertexMeta->batched_prim.size();
+       batch_index++) {
+    std::vector<unsigned> batch_prim = VertexMeta->batched_prim.at(batch_index);
+    std::unordered_map<unsigned, unsigned> idx_to_tid =
+        VertexMeta->batched_idx_to_tid.at(batch_index);
+    assert(batch_prim.size() % 3 == 0);
+    for (unsigned i = 0; i < batch_prim.size(); i += 3) {
+      std::vector<unsigned> prim;
+      // 3 because primitives are triangles
+      unsigned clipped = 0;
+      for (unsigned j = 0; j < 3; j++) {
+        unsigned index = batch_prim[i + j];
+        unsigned tid = idx_to_tid.at(index);
+        prim.push_back(tid);
+        // (-w <= x,y,z <= w) equal to (fabs(x,y,z) > fbas(w))
+        if (fabs(VertexMeta->vertex_raw[tid][0]) >
+            fabs(VertexMeta->vertex_raw[tid][3])) {
+          clipped++;
+          continue;
+        }
+        if (fabs(VertexMeta->vertex_raw[tid][1]) >
+            fabs(VertexMeta->vertex_raw[tid][3])) {
+          clipped++;
+          continue;
+        }
+        if (fabs(VertexMeta->vertex_raw[tid][2]) >
+            fabs(VertexMeta->vertex_raw[tid][3])) {
+          clipped++;
+          continue;
+        }
+      }
+      if (clipped < 3) {
+        VertexMeta->primitives.push_back(prim);
+        count++;
+      }
+    }
+
+    generate_frag(batch_index);
+    VertexMeta->primitives.clear();
+  }
+
+  for (unsigned sid = 0; sid < VertexMeta->target_sm.size(); sid++) {
+    VertexMeta->issue_order.push_back(
+        issue_info(batch_index, sid, VertexMeta->target_sm[sid]));
+    VertexMeta->target_sm[sid].clear();
+  }
+  printf("total primitives after clipping: %u\n", count);
+}
+
+void VulkanRayTracing::cleanup() {
+  if (VertexMeta) {
+    delete VertexMeta;
+    VertexMeta = new struct vertex_metadata;
+  }
+  std::string mesa_root = getenv("MESA_ROOT");
+  std::string cmd = "rm -rf " + mesa_root + "gpgpusimShaders/*";
+  system(cmd.c_str());
+  descriptorSet = NULL;
+
+  if (draw == 24) {
+    exit(0);
+  }
+  draw++;
+}
+
+void VulkanRayTracing::generate_frag(unsigned batch_index) {
+  
+  for (auto attrib : VertexMeta->vertex_out_devptr) {
+    std::string index = attrib.first;
+    VertexMeta->attribs.insert(
+        std::make_pair(index, std::vector<std::vector<float>>()));
+  }
+
+  for (auto prim : VertexMeta->primitives) {
+    double x1 = VertexMeta->vertex_screen[prim[0]][0];
+    double y1 = VertexMeta->vertex_screen[prim[0]][1];
+    double x2 = VertexMeta->vertex_screen[prim[1]][0];
+    double y2 = VertexMeta->vertex_screen[prim[1]][1];
+    double x3 = VertexMeta->vertex_screen[prim[2]][0];
+    double y3 = VertexMeta->vertex_screen[prim[2]][1];
+
+    double max_x = std::min(FBO->width - 1.0, std::max(x1, std::max(x2, x3)));
+    double min_x = std::max(0., std::min(x1, std::min(x2, x3)));
+    double max_y = std::min(FBO->height - 1.0, std::max(y1, std::max(y2, y3)));
+    double min_y = std::max(0., std::min(y1, std::min(y2, y3)));
+
+    double r = rand() % 255 / 255.f;
+    double g = rand() % 255 / 255.f;
+    double b = rand() % 255 / 255.f;
+
+    for (int x = (int)min_x; x <= (int)max_x; x++) {
+      for (int y = (int)min_y; y <= (int)max_y; y++) {
+        unsigned pixel = y * FBO->width + x;
+        double det = x1 * (y2 - y3) - y1 * (x2 - x3) + (x2 * y3 - y2 * x3);
+        // https://gamedev.stackexchange.com/questions/23743/whats-the-most-efficient-way-to-find-barycentric-coordinates
+        double d00 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+        double d01 = (x2 - x1) * (x3 - x1) + (y2 - y1) * (y3 - y1);
+        double d11 = (x3 - x1) * (x3 - x1) + (y3 - y1) * (y3 - y1);
+        double d20 = (x - x1) * (x2 - x1) + (y - y1) * (y2 - y1);
+        double d21 = (x - x1) * (x3 - x1) + (y - y1) * (y3 - y1);
+        double denom = d00 * d11 - d01 * d01;
+        double v = (d11 * d20 - d01 * d21) / denom;
+        double w = (d00 * d21 - d01 * d20) / denom;
+        double u = 1.0f - v - w;
+        if (det == 0.0) {
+          continue;
+        }
+        if (u < 0 || v < 0 || w < 0) {
+          continue;
+        }
+        float depth = u * VertexMeta->vertex_screen[prim[0]][2] +
+                      v * VertexMeta->vertex_screen[prim[1]][2] +
+                      w * VertexMeta->vertex_screen[prim[2]][2];
+        // printf("depth is %f\n",depth);
+        switch (VertexMeta->DepthcmpOp) {
+          case VK_COMPARE_OP_GREATER:
+            if (FBO->depthout[pixel] > depth) {
+              continue;
+            }
+            break;
+          case VK_COMPARE_OP_LESS:
+            if (FBO->depthout[pixel] < depth) {
+              continue;
+            }
+            break;
+          case VK_COMPARE_OP_LESS_OR_EQUAL:
+            if (FBO->depthout[pixel] <= depth) {
+              continue;
+            }
+            break;
+          // case VK_COMPARE_OP_NEVER:
+          // break;
+          default:
+            printf("unsupported depth compare op\n");
+            assert(0 && "unsupported depth compare op");
+        }
+        FBO->fbo[(pixel) * 4] = r;
+        FBO->fbo[(pixel) * 4 + 1] = g;
+        FBO->fbo[(pixel) * 4 + 2] = b;
+        FBO->fbo[(pixel) * 4 + 3] = 1.0f;
+
+        unsigned tileColumn = x / 16;
+        unsigned tileRow = y / 16;
+        unsigned tilePerRow = FBO->width / 16;
+        unsigned tile_id = tileRow * tilePerRow + tileColumn;
+        unsigned sm_id = tile_id % 16;
+
+        for (auto out_attribute : VertexMeta->vertex_out_devptr) {
+          std::string index = out_attribute.first;
+          std::vector<float> vec;
+          unsigned stride = VertexMeta->vertex_out_stride.at(index);
+          float *vertex = VertexMeta->vertex_out.at(index);
+          switch (stride) {
+            case 4: {
+              float v0 = vertex[1 * prim[0]] * u + vertex[1 * prim[1]] * v +
+                         vertex[1 * prim[2]] * w;
+              vec.push_back(v0);
+              break;
+            }
+            case 8: {
+              // vec2
+              float v0 = vertex[2 * prim[0]] * u + vertex[2 * prim[1]] * v +
+                         vertex[2 * prim[2]] * w;
+              float v1 = vertex[2 * prim[0] + 1] * u +
+                         vertex[2 * prim[1] + 1] * v +
+                         vertex[2 * prim[2] + 1] * w;
+              assert(!isnan(v0) && !isnan(v1));
+              vec.push_back(v0);
+              vec.push_back(v1);
+              break;
+            }
+            case 12: {
+              // vec3
+              float v0 = vertex[3 * prim[0]] * u + vertex[3 * prim[1]] * v +
+                         vertex[3 * prim[2]] * w;
+              float v1 = vertex[3 * prim[0] + 1] * u +
+                         vertex[3 * prim[1] + 1] * v +
+                         vertex[3 * prim[2] + 1] * w;
+              float v2 = vertex[3 * prim[0] + 2] * u +
+                         vertex[3 * prim[1] + 2] * v +
+                         vertex[3 * prim[2] + 2] * w;
+              vec.push_back(v0);
+              vec.push_back(v1);
+              vec.push_back(v2);
+              break;
+            }
+            case 16: {
+              // vec4
+              float v0 = vertex[4 * prim[0]] * u + vertex[4 * prim[1]] * v +
+                         vertex[4 * prim[2]] * w;
+              float v1 = vertex[4 * prim[0] + 1] * u +
+                         vertex[4 * prim[1] + 1] * v +
+                         vertex[4 * prim[2] + 1] * w;
+              float v2 = vertex[4 * prim[0] + 2] * u +
+                         vertex[4 * prim[1] + 2] * v +
+                         vertex[4 * prim[2] + 2] * w;
+              float v3 = vertex[4 * prim[0] + 3] * u +
+                         vertex[4 * prim[1] + 3] * v +
+                         vertex[4 * prim[2] + 3] * w;
+              vec.push_back(v0);
+              vec.push_back(v1);
+              vec.push_back(v2);
+              vec.push_back(v3);
+              break;
+            }
+            default: {
+              printf("unsupported vertex out attribute size\n");
+              // just add it
+              assert(0);
+            }
+          }
+          VertexMeta->attribs.at(index).push_back(vec);
+          assert(vec.size() == VertexMeta->attribs.at(index)[0].size());
+        }
+        unsigned tid = VertexMeta->attribs.at(gl_position).size() - 1;
+        VertexMeta->target_sm[sm_id].push_back(tid);
+        VertexMeta->thread_info_pixel.push_back(pixel);
+        FBO->depthout[pixel] = depth;
+
+        if (VertexMeta->target_sm[sm_id].size() == 32) {
+          // enough frags to form a warp -> flush
+          VertexMeta->issue_order.push_back(
+              issue_info(batch_index, sm_id, VertexMeta->target_sm[sm_id]));
+          VertexMeta->target_sm[sm_id].clear();
+        }
+      }
+    }
+  }
+
+  // printf("total frags collected - %u\n", VertexMeta->thread_info_pixel.size());
+}
+
+void VulkanRayTracing::dumpFBO() {
+  std::string mesa_root = getenv("MESA_ROOT");
+  gpgpu_context *ctx = GPGPU_Context();
+  CUctx_st *context = GPGPUSim_Context(ctx);
+  gpgpu_sim *m_gpu = context->get_device()->get_gpgpu();
+  m_gpu->memcpy_from_gpu(FBO->fbo, FBO->fbo_dev, FBO->fbo_size);
+  uint8_t *out = new uint8_t[FBO->fbo_count];
+  for (unsigned i = 0; i < FBO->fbo_count; i += 4) {
+    out[i] = linearRGB_to_SRGB(FBO->fbo[i]) * 255;
+    out[i + 1] = linearRGB_to_SRGB(FBO->fbo[i + 1]) * 255;
+    out[i + 2] = linearRGB_to_SRGB(FBO->fbo[i + 2]) * 255;
+    out[i + 3] = linearRGB_to_SRGB(FBO->fbo[i + 3]) * 255;
+  }
+  std::string fbo_file =
+      mesa_root + "../fb/" + "fbo_out_" + std::to_string(draw);
+  FILE *fp;
+  fp = fopen((fbo_file + ".bin").c_str(), "wb+");
+  fwrite(out, 1, FBO->fbo_size / 4, fp);
+  fclose(fp);
+  delete[] (out);
+  std::string fbo_cmd = "convert -depth 8 -size " + std::to_string(FBO->width) +
+                        "x" + std::to_string(FBO->height) +
+                        "+0 rgba:" + fbo_file + ".bin " + fbo_file + ".jpg";
+  system(fbo_cmd.c_str());
+  system(("rm " + fbo_file + ".bin").c_str());
+}
+
+void VulkanRayTracing::pre_frag() {
+  VertexMeta->vertex_out_count.clear();
+  VertexMeta->vertex_out_size.clear();
+  for (auto attrib : VertexMeta->vertex_out_devptr) {
+    std::string index = attrib.first;
+
+    unsigned stride = VertexMeta->vertex_out_stride.at(index);
+
+    VertexMeta->vertex_out_count[index] =
+        VertexMeta->attribs.at(index).size() *
+        VertexMeta->attribs.at(index)[0].size();
+
+    assert(VertexMeta->vertex_out_stride.at(index) ==
+           VertexMeta->attribs.at(index)[0].size() * sizeof(float));
+
+    VertexMeta->vertex_out_size[index] =
+        VertexMeta->attribs.at(index).size() *
+        VertexMeta->attribs.at(index)[0].size() * sizeof(float);
+
+    delete VertexMeta->vertex_out.at(index);
+
+    VertexMeta->vertex_out[index] =
+        new float[VertexMeta->vertex_out_count.at(index)];
+  }
+  unsigned index = 0;
+  std::vector<unsigned> pixel_index = VertexMeta->thread_info_pixel;
+  VertexMeta->thread_info_pixel.clear();
+  for (auto issued_warp : VertexMeta->issue_order) {
+    unsigned batch_index = issued_warp.batch_index;
+    unsigned sm_id = issued_warp.shader_id;
+    std::vector<unsigned> warp = issued_warp.warp;
+
+    for (auto tid : warp) {
+      for (auto attrib : VertexMeta->vertex_out_devptr) {
+        std::string attrib_idx = attrib.first;
+        unsigned size =
+              VertexMeta->attribs.at(attrib_idx)[tid].size();
+        for (unsigned j = 0; j < size; j++) {
+          assert (index * size + j < VertexMeta->vertex_out_count.at(attrib_idx));
+          VertexMeta->vertex_out.at(attrib_idx)[index * size + j] =
+              VertexMeta->attribs.at(attrib_idx)[tid][j];
+        }
+      }
+      VertexMeta->pixel_map[pixel_index[tid]] = VertexMeta->thread_info_pixel.size();
+      VertexMeta->thread_info_pixel.push_back(pixel_index[tid]);
+      index++;
+    }
+  }
+  assert(pixel_index.size() == VertexMeta->thread_info_pixel.size());
+}
+
+
+void VulkanRayTracing::genLoD() {
+  unsigned texture_width = 1024;
+  unsigned texture_height = 1024;
+  std::string tex_idx = "VARYING_SLOT_VAR1_xy";
+  for (unsigned i = 0; i < VertexMeta->thread_info_pixel.size(); i++) {
+    float lod = 0;
+    {
+      // calcualte LOD of each pixel
+      unsigned pixel = VertexMeta->thread_info_pixel[i];
+      unsigned x = pixel % FBO->width;
+      unsigned y = pixel / FBO->width;
+      // determine which pixel to get within the 2x2 quad
+      int x_offset = 0;
+      int y_offset = 0;
+      x % 2 == 0 ? x_offset = 1 : x_offset = -1;
+      y % 2 == 0 ? y_offset = 1 : y_offset = -1;
+      // make sure the offset is within the image
+      if (x + x_offset > FBO->width - 1 || x + x_offset < 0) {
+        x_offset = 0;
+      }
+      if (y + y_offset > FBO->height - 1 || y + y_offset < 0) {
+        y_offset = 0;
+      }
+
+      unsigned next_x = pixel + x_offset;
+      unsigned next_y = pixel + y_offset * FBO->width;
+      // real gpu always use 2x2 quad, but we don't do that here.
+      // next pixel may not been drawn
+      // need to make sure the next pixel is rendered
+      float ddx, ddy;
+      float u = VertexMeta->vertex_out.at(tex_idx)[i * 2];
+      float v = VertexMeta->vertex_out.at(tex_idx)[i * 2 + 1];
+      auto xx = VertexMeta->pixel_map.find(next_x);
+      if (xx != VertexMeta->pixel_map.end()) {
+        unsigned thread_id = VertexMeta->pixel_map[next_x];
+        float dudx = (VertexMeta->vertex_out.at(tex_idx)[thread_id * 2]) - u;
+        float dvdx =
+            (VertexMeta->vertex_out.at(tex_idx)[thread_id * 2 + 1]) - v;
+        ddx = std::min(sqrt(dudx * dudx + dvdx * dvdx), 1.0f);
+      } else {
+        ddx = 1.0f / texture_width;
+      }
+      auto yy = VertexMeta->pixel_map.find(next_y);
+      if (yy != VertexMeta->pixel_map.end()) {
+        unsigned thread_id = VertexMeta->pixel_map[next_y];
+        float dudy = (VertexMeta->vertex_out.at(tex_idx)[thread_id * 2]) - u;
+        float dvdy =
+            (VertexMeta->vertex_out.at(tex_idx)[thread_id * 2 + 1]) - v;
+        ddy = std::min(sqrt(dudy * dudy + dvdy * dvdy), 1.0f);
+      } else {
+        ddy = 1.0f / texture_height;
+      }
+      lod = log2(std::max(ddx * texture_width, ddy * texture_height));
+      lod = std::max(lod, (float)0);
+      assert(!isnan(lod));
+    }
+    FBO->thread_info_lod.push_back(lod);
+    printf("lod is %f\n", lod);
+  }
+}

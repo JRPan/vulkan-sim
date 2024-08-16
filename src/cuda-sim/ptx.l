@@ -191,6 +191,7 @@ image_deref_store   TC; yylval->int_value = IMG_DEREF_ST_OP; return OPCODE;
 image_deref_load   TC; yylval->int_value = IMG_DEREF_LD_OP; return OPCODE;
 store_deref TC; yylval->int_value = ST_DEREF_OP; return OPCODE;
 rt_alloc_mem TC; yylval->int_value = RT_ALLOC_MEM_OP; return OPCODE;
+load_ubo TC; yylval->int_value = LOAD_UBO_OP; return OPCODE;
 wrap_32_4 TC; yylval->int_value = WRAP_32_4_OP; return OPCODE;
 unwrap_32_4 TC; yylval->int_value = UNWRAP_32_4_OP; return OPCODE;
 get_element_32 TC; yylval->int_value = GET_ELEMENT_32_OP; return OPCODE;

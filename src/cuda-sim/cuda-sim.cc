@@ -498,7 +498,7 @@ void gpgpu_t::memcpy_from_gpu(void *dst, size_t src_start_addr, size_t count) {
   }
   unsigned char *dst_data = (unsigned char *)dst;
   for (unsigned n = 0; n < count; n++)
-    m_global_mem->read(src_start_addr + n, 1, dst_data + n);
+    m_global_mem->read_from_gpu(src_start_addr + n, 1, dst_data + n);
 
   // Copy into the performance model.
   // extern gpgpu_sim* g_the_gpu;
@@ -769,6 +769,9 @@ void ptx_instruction::set_opcode_and_latency() {
          &gpgpu_ctx->func_sim->cdp_latency[3],
          &gpgpu_ctx->func_sim->cdp_latency[4]);
 
+  if (m_opcode == RT_ALLOC_MEM_OP) {
+    m_operands.back().set_type(s_identifier_t);
+  }
   if (!m_operands.empty()) {
     std::vector<operand_info>::iterator it;
     for (it = ++m_operands.begin(); it != m_operands.end(); it++) {
@@ -792,6 +795,7 @@ void ptx_instruction::set_opcode_and_latency() {
       break;
     case LD_OP:
     case IMG_DEREF_LD_OP:
+    case LOAD_UBO_OP:
       op = LOAD_OP;
       break;
     case MMA_LD_OP:
@@ -1149,6 +1153,8 @@ void ptx_instruction::pre_decode() {
         cache_op = CACHE_GLOBAL;
       else if (m_opcode == TRACE_RAY_OP)
         cache_op = CACHE_ALL;
+      else if (m_opcode == LOAD_UBO_OP) 
+        cache_op = CACHE_ALL;
       break;
   }
 
@@ -1324,6 +1330,12 @@ void ptx_instruction::set_input_output_registers() {
     case GET_ELEMENT_32_OP:
     case SET_ELEMENT_32_OP:
       operand_classification = {2, 1, 1};
+      if (num_operands == 4) {
+        operand_classification.push_back(1);
+      } else if (num_operands == 5) {
+        operand_classification.push_back(1);
+        operand_classification.push_back(1);
+      } 
       break;
     case WRAP_32_4_OP:
       operand_classification = {2, 1, 1, 1, 1};
@@ -2043,12 +2055,12 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       insn_data_size = datatype2size(to_type);
     }
 
-    if (pI->get_opcode() == TEX_OP) {
-      inst.set_addr(lane_id, last_eaddr());
-      assert(inst.space == last_space());
-      insn_data_size = get_tex_datasize(
-          pI,
-          this);  // texture obtain its data granularity from the texture info
+     if (pI->get_opcode() == TEX_OP) {
+      inst.set_addr(lane_id, last_eaddrs());
+      insn_space.set_type(tex_space);
+      inst.space = insn_space;
+      insn_data_size = last_size();
+      inst.data_size = insn_data_size;
     }
 
     else if (pI->get_opcode() == TXL_OP) {
@@ -2089,6 +2101,13 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       inst.space = insn_space;
       insn_data_size = 16;
       inst.data_size = insn_data_size;
+    }
+
+    if (pI->get_opcode() == LOAD_UBO_OP) {
+      insn_space.set_type(global_space);
+      insn_memaddr = last_eaddr();
+      insn_data_size = 16;
+      assert(insn_space == last_space());
     }
     
     // Output register information to file and stdout

@@ -3418,12 +3418,25 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   int t;
   data.u64 = 0;
   type_info_key::type_decode(type, size, t);
+  unsigned thread_id = thread->get_thread_id();
+
+  if (thread_id >= VulkanRayTracing::thread_count ||
+      VulkanRayTracing::VertexMeta->vb_deactive.find(thread_id) !=
+          VulkanRayTracing::VertexMeta->vb_deactive.end()) {
+    thread->m_last_effective_address = 0;
+    thread->m_last_memory_space = space;
+    return;
+  }
+
   if (!vector_spec) {
     mem->read(addr, size / 8, &data.s64); // MRS_TODO: this is the correct one needed
     // memcpy(&(data.s64), addr64, size / 8);
     // printf("float value = %f\n", *((float*)addr64));
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
+    // if (thread_id == 0) {
+    //   printf("ld_exec: thread = %u, line = %u, addr=%x, data=%f\n", thread_id, pI->source_line(), addr, data.f32);
+    // }
   } else {
     assert(0); //MRS_TODO: what happends here? turn this to 64 bit as well
     ptx_reg_t data1, data2, data3, data4;
@@ -4862,7 +4875,7 @@ void rem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void ret_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
     // if(thread->get_ctaid().x == 2 && thread->get_ctaid().y == 89 && thread->get_ctaid().z == 0)
-    VSIM_DPRINTF("gpgpusim: return from function in %s\n", pI->source_file());
+    // VSIM_DPRINTF("gpgpusim: return from function in %s\n", pI->source_file());
     if(print_debug_insts)
     {
       printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
@@ -5871,6 +5884,10 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     // assert(size == 32);
     // memcpy(address, &data.s64, size / 8);
     // *address = data.f32;
+    unsigned thread_id = thread->get_thread_id();
+    // if (thread_id == 0) {
+    //   printf("Thread %u line %u: Writing %f to address %x\n", thread_id, pI->source_line(), data.f32, addr);
+    // }
   } else {
     assert (0);
     if (vector_spec == V2_TYPE) {
@@ -6109,323 +6126,378 @@ void textureNormalizeOutput(const struct cudaChannelFormatDesc &desc,
 }
 
 void tex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  unsigned dimension = pI->dimension();
-  const operand_info &dst =
-      pI->dst();  // the registers to which fetched texel will be placed
-  const operand_info &src1 = pI->src1();  // the name of the texture
-  const operand_info &src2 =
-      pI->src2();  // the vector registers containing coordinates of the texel
-                   // to be fetched
 
-  std::string texname = src1.name();
-  unsigned to_type = pI->get_type();
-  unsigned c_type = pI->get_type2();
-  fflush(stdout);
-  ptx_reg_t data1, data2, data3, data4;
-  if (!thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs)
-    thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs = new ptx_reg_t[4];
-  unsigned nelem = src2.get_vect_nelem();
-  thread->get_vector_operand_values(
-      src2, thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs,
-      nelem);  // ptx_reg should be 4 entry vector type...coordinates into
-               // texture
-  /*
-    For programs with many streams, textures can be bound and unbound
-    asynchronously.  This means we need to use the kernel's "snapshot" of
-    the state of the texture mappings when it was launched (so that we
-    don't try to access the incorrect texture mapping if it's been updated,
-    or that we don't access a mapping that has been unbound).
-  */
-  gpgpu_t *gpu = thread->get_gpu();
-  kernel_info_t &k = thread->get_kernel();
-  const struct textureReference *texref = gpu->get_texref(texname);
-  const struct cudaArray *cuArray = k.get_texarray(texname);
-  const struct textureInfo *texInfo = k.get_texinfo(texname);
-  const struct textureReferenceAttr *texAttr = gpu->get_texattr(texname);
+  ptx_reg_t src0_data, src1_data, src6_data, src7_data, src8_data, data;
+  
+  const operand_info &src0 = pI->operand_lookup(4);
+  src0_data = thread->get_operand_value(src0, src0, U64_TYPE, thread, 1);
+  // void* desc = (void*)(src0_data.u64);
 
-  // assume always 2D f32 input
-  // access array with src2 coordinates
-  memory_space *mem = thread->get_global_memory();
-  float x_f32, y_f32;
-  size_t size;
-  int t;
-  unsigned tex_array_base;
-  unsigned int width = 0, height = 0;
-  int x = 0;
-  int y = 0;
-  unsigned tex_array_index;
-  float alpha = 0, beta = 0;
+  const operand_info &src1 = pI->operand_lookup(5);
+  src1_data = thread->get_operand_value(src1, src1, U64_TYPE, thread, 1);
+  // void* sampler = (void*)(src1_data.u64);
 
-  type_info_key::type_decode(to_type, size, t);
-  tex_array_base = cuArray->devPtr32;
+  const operand_info &src6 = pI->operand_lookup(6);
+  src6_data = thread->get_operand_value(src6, src6, F32_TYPE, thread, 1);
+  float x = src6_data.f32;
 
-  switch (dimension) {
-    case GEOM_MODIFIER_1D:
-      width = cuArray->width;
-      height = cuArray->height;
-      if (texref->normalized) {
-        assert(c_type == F32_TYPE);
-        x_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32;
-        if (texref->addressMode[0] == cudaAddressModeClamp) {
-          x_f32 = (x_f32 > 1.0) ? 1.0 : x_f32;
-          x_f32 = (x_f32 < 0.0) ? 0.0 : x_f32;
-        } else if (texref->addressMode[0] == cudaAddressModeWrap) {
-          x_f32 = x_f32 - floor(x_f32);
-        }
+  const operand_info &src7 = pI->operand_lookup(7);
+  src7_data = thread->get_operand_value(src7, src7, F32_TYPE, thread, 1);
+  float y = src7_data.f32;
 
-        if (texref->filterMode == cudaFilterModeLinear) {
-          float xb = x_f32 * width - 0.5;
-          alpha = xb - floor(xb);
-          alpha = reduce_precision(alpha, 9);
-          beta = 0.0;
+  float c0, c1, c2, c3;
 
-          x = (int)floor(xb);
-          y = 0;
-        } else {
-          x = (int)floor(x_f32 * width);
-          y = 0;
-        }
-      } else {
-        switch (c_type) {
-          case S32_TYPE:
-            x = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].s32;
-            assert(texref->filterMode == cudaFilterModePoint);
-            break;
-          case F32_TYPE:
-            x_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32;
-            alpha = x_f32 -
-                    floor(x_f32);  // offset into subtexel (for linear sampling)
-            x = (int)x_f32;
-            break;
-          default:
-            assert(0 && "Unsupported texture coordinate type.");
-        }
-        // handle texture fetch that exceeded boundaries
-        if (texref->addressMode[0] == cudaAddressModeClamp) {
-          x = (x > width - 1) ? (width - 1) : x;
-          x = (x < 0) ? 0 : x;
-        } else if (texref->addressMode[0] == cudaAddressModeWrap) {
-          x = x % width;
-        }
-      }
-      width *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
-                cuArray->desc.z) /
-               8;
-      x *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
-            cuArray->desc.z) /
-           8;
-      tex_array_index = tex_array_base + x;
+  ptx_reg_t offset_reg;
 
-      break;
-    case GEOM_MODIFIER_2D:
-      width = cuArray->width;
-      height = cuArray->height;
-      if (texref->normalized) {
-        x_f32 = reduce_precision(
-            thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32, 16);
-        y_f32 = reduce_precision(
-            thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[1].f32, 15);
-
-        if (texref->addressMode[0]) {  // clamp
-          if (x_f32 < 0) x_f32 = 0;
-          if (x_f32 >= 1) x_f32 = 1 - 1 / x_f32;
-        } else {  // wrap
-          x_f32 = x_f32 - floor(x_f32);
-        }
-        if (texref->addressMode[1]) {  // clamp
-          if (y_f32 < 0) y_f32 = 0;
-          if (y_f32 >= 1) y_f32 = 1 - 1 / y_f32;
-        } else {  // wrap
-          y_f32 = y_f32 - floor(y_f32);
-        }
-
-        if (texref->filterMode == cudaFilterModeLinear) {
-          float xb = x_f32 * width - 0.5;
-          float yb = y_f32 * height - 0.5;
-          alpha = xb - floor(xb);
-          beta = yb - floor(yb);
-          alpha = reduce_precision(alpha, 9);
-          beta = reduce_precision(beta, 9);
-
-          x = (int)floor(xb);
-          y = (int)floor(yb);
-        } else {
-          x = (int)floor(x_f32 * width);
-          y = (int)floor(y_f32 * height);
-        }
-      } else {
-        x_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32;
-        y_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[1].f32;
-
-        alpha = x_f32 - floor(x_f32);
-        beta = y_f32 - floor(y_f32);
-
-        x = (int)x_f32;
-        y = (int)y_f32;
-        if (texref->addressMode[0]) {  // clamp
-          if (x < 0) x = 0;
-          if (x >= (int)width) x = width - 1;
-        } else {  // wrap
-          x = x % width;
-          if (x < 0) x *= -1;
-        }
-        if (texref->addressMode[1]) {  // clamp
-          if (y < 0) y = 0;
-          if (y >= (int)height) y = height - 1;
-        } else {  // wrap
-          y = y % height;
-          if (y < 0) y *= -1;
-        }
-      }
-
-      width *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
-                cuArray->desc.z) /
-               8;
-      x *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
-            cuArray->desc.z) /
-           8;
-      tex_array_index = tex_array_base + (x + width * y);
-      break;
-    default:
-      assert(0);
-      break;
+  std::vector<ImageMemoryTransactionRecord> transactions;
+  void *desc = (uint64_t)(VulkanRayTracing::getDescriptorAddress(src0_data.u32, src1_data.u32));
+  unsigned lod = 0;
+  unsigned thread_id = thread->get_thread_id();
+  if (VulkanRayTracing::use_CRISP) {
+    VulkanRayTracing::getTexLOD(thread_id);
   }
-  switch (to_type) {
-    case U8_TYPE:
-    case U16_TYPE:
-    case U32_TYPE:
-    case B8_TYPE:
-    case B16_TYPE:
-    case B32_TYPE:
-    case S8_TYPE:
-    case S16_TYPE:
-    case S32_TYPE: {
-      unsigned long long elementOffset = 0;  // offset into the next element
-      mem->read(tex_array_index, cuArray->desc.x / 8, &data1.u32);
-      elementOffset += cuArray->desc.x / 8;
-      if (cuArray->desc.y) {
-        mem->read(tex_array_index + elementOffset, cuArray->desc.y / 8,
-                  &data2.u32);
-        elementOffset += cuArray->desc.y / 8;
-        if (cuArray->desc.z) {
-          mem->read(tex_array_index + elementOffset, cuArray->desc.z / 8,
-                    &data3.u32);
-          elementOffset += cuArray->desc.z / 8;
-          if (cuArray->desc.w)
-            mem->read(tex_array_index + elementOffset, cuArray->desc.w / 8,
-                      &data4.u32);
-        }
-      }
-      break;
-    }
-    case B64_TYPE:
-    case U64_TYPE:
-    case S64_TYPE:
-      mem->read(tex_array_index, 8, &data1.u64);
-      if (cuArray->desc.y) {
-        mem->read(tex_array_index + 8, 8, &data2.u64);
-        if (cuArray->desc.z) {
-          mem->read(tex_array_index + 16, 8, &data3.u64);
-          if (cuArray->desc.w) mem->read(tex_array_index + 24, 8, &data4.u64);
-        }
-      }
-      break;
-    case F16_TYPE:
-      assert(0);
-      break;
-    case F32_TYPE: {
-      if (texref->filterMode == cudaFilterModeLinear) {
-        texAddr_t b_lim = wrap;
-        if (texref->addressMode[0] == cudaAddressModeClamp) {
-          b_lim = clamp;
-        }
-        size_t elem_size = (cuArray->desc.x + cuArray->desc.y +
-                            cuArray->desc.z + cuArray->desc.w) /
-                           8;
-        size_t elem_ofst = 0;
+  VulkanRayTracing::getTexture(desc, x, y, 0, c0, c1, c2, c3, transactions, offset_reg.u64);
 
-        data1.f32 =
-            tex_linf_sampling(mem, tex_array_base, x + elem_ofst, y, width,
-                              height, elem_size, alpha, beta, b_lim);
-        elem_ofst += cuArray->desc.x / 8;
-        if (cuArray->desc.y) {
-          data2.f32 =
-              tex_linf_sampling(mem, tex_array_base, x + elem_ofst, y, width,
-                                height, elem_size, alpha, beta, b_lim);
-          elem_ofst += cuArray->desc.y / 8;
-          if (cuArray->desc.z) {
-            data3.f32 =
-                tex_linf_sampling(mem, tex_array_base, x + elem_ofst, y, width,
-                                  height, elem_size, alpha, beta, b_lim);
-            elem_ofst += cuArray->desc.z / 8;
-            if (cuArray->desc.w)
-              data4.f32 = tex_linf_sampling(mem, tex_array_base, x + elem_ofst,
-                                            y, width, height, elem_size, alpha,
-                                            beta, b_lim);
-          }
-        }
-      } else {
-        mem->read(tex_array_index, cuArray->desc.x / 8, &data1.f32);
-        if (cuArray->desc.y) {
-          mem->read(tex_array_index + 4, cuArray->desc.y / 8, &data2.f32);
-          if (cuArray->desc.z) {
-            mem->read(tex_array_index + 8, cuArray->desc.z / 8, &data3.f32);
-            if (cuArray->desc.w)
-              mem->read(tex_array_index + 12, cuArray->desc.w / 8, &data4.f32);
-          }
-        }
-      }
-    } break;
-    case F64_TYPE:
-    case FF64_TYPE:
-      mem->read(tex_array_index, 8, &data1.f64);
-      if (cuArray->desc.y) {
-        mem->read(tex_array_index + 8, 8, &data2.f64);
-        if (cuArray->desc.z) {
-          mem->read(tex_array_index + 16, 8, &data3.f64);
-          if (cuArray->desc.w) mem->read(tex_array_index + 24, 8, &data4.f64);
-        }
-      }
-      break;
-    default:
-      assert(0);
-      break;
-  }
-  int x_block_coord, y_block_coord, memreqindex, blockoffset;
+  const operand_info &dst0 = pI->operand_lookup(0);
+  const operand_info &dst1 = pI->operand_lookup(1);
+  const operand_info &dst2 = pI->operand_lookup(2);
+  const operand_info &dst3 = pI->operand_lookup(3);
 
-  switch (dimension) {
-    case GEOM_MODIFIER_1D:
-      thread->m_last_effective_address = tex_array_index;
-      break;
-    case GEOM_MODIFIER_2D:
-      x_block_coord = x >> (texInfo->Tx_numbits + texInfo->texel_size_numbits);
-      y_block_coord = y >> texInfo->Ty_numbits;
+  data.f32 = c0;
+  thread->set_operand_value(dst0, data, F32_TYPE, thread, pI);
 
-      memreqindex =
-          ((y_block_coord * cuArray->width / texInfo->Tx) + x_block_coord) << 6;
+  data.f32 = c1;
+  thread->set_operand_value(dst1, data, F32_TYPE, thread, pI);
 
-      blockoffset = (x % (texInfo->Tx * texInfo->texel_size) +
-                     (y % (texInfo->Ty)
-                      << (texInfo->Tx_numbits + texInfo->texel_size_numbits)));
-      memreqindex += blockoffset;
-      thread->m_last_effective_address =
-          tex_array_base + memreqindex;  // tex_array_index;
-      break;
-    default:
-      assert(0);
-  }
+  data.f32 = c2;
+  thread->set_operand_value(dst2, data, F32_TYPE, thread, pI);
+
+  data.f32 = c3;
+  thread->set_operand_value(dst3, data, F32_TYPE, thread, pI);
+
+  TXL_DPRINTF("Setting %d transactions in thread as tex_space\n", transactions.size());
+  thread->set_txl_transactions(transactions);
   thread->m_last_memory_space = tex_space;
-
-  // normalize output into floating point numbers according to the texture read
-  // mode
-  if (texAttr->m_readmode == cudaReadModeNormalizedFloat) {
-    textureNormalizeOutput(cuArray->desc, data1, data2, data3, data4);
-  } else {
-    assert(texAttr->m_readmode == cudaReadModeElementType);
-  }
-
-  thread->set_vector_operand_values(dst, data1, data2, data3, data4);
 }
+
+// void tex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+//   unsigned dimension = pI->dimension();
+//   const operand_info &dst =
+//       pI->dst();  // the registers to which fetched texel will be placed
+//   const operand_info &src1 = pI->src1();  // the name of the texture
+//   const operand_info &src2 =
+//       pI->src2();  // the vector registers containing coordinates of the texel
+//                    // to be fetched
+
+//   std::string texname = src1.name();
+//   unsigned to_type = pI->get_type();
+//   unsigned c_type = pI->get_type2();
+//   fflush(stdout);
+//   ptx_reg_t data1, data2, data3, data4;
+//   if (!thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs)
+//     thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs = new ptx_reg_t[4];
+//   unsigned nelem = src2.get_vect_nelem();
+//   thread->get_vector_operand_values(
+//       src2, thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs,
+//       nelem);  // ptx_reg should be 4 entry vector type...coordinates into
+//                // texture
+//   /*
+//     For programs with many streams, textures can be bound and unbound
+//     asynchronously.  This means we need to use the kernel's "snapshot" of
+//     the state of the texture mappings when it was launched (so that we
+//     don't try to access the incorrect texture mapping if it's been updated,
+//     or that we don't access a mapping that has been unbound).
+//   */
+//   gpgpu_t *gpu = thread->get_gpu();
+//   kernel_info_t &k = thread->get_kernel();
+//   const struct textureReference *texref = gpu->get_texref(texname);
+//   const struct cudaArray *cuArray = k.get_texarray(texname);
+//   const struct textureInfo *texInfo = k.get_texinfo(texname);
+//   const struct textureReferenceAttr *texAttr = gpu->get_texattr(texname);
+
+//   // assume always 2D f32 input
+//   // access array with src2 coordinates
+//   memory_space *mem = thread->get_global_memory();
+//   float x_f32, y_f32;
+//   size_t size;
+//   int t;
+//   unsigned tex_array_base;
+//   unsigned int width = 0, height = 0;
+//   int x = 0;
+//   int y = 0;
+//   unsigned tex_array_index;
+//   float alpha = 0, beta = 0;
+
+//   type_info_key::type_decode(to_type, size, t);
+//   tex_array_base = cuArray->devPtr32;
+
+//   switch (dimension) {
+//     case GEOM_MODIFIER_1D:
+//       width = cuArray->width;
+//       height = cuArray->height;
+//       if (texref->normalized) {
+//         assert(c_type == F32_TYPE);
+//         x_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32;
+//         if (texref->addressMode[0] == cudaAddressModeClamp) {
+//           x_f32 = (x_f32 > 1.0) ? 1.0 : x_f32;
+//           x_f32 = (x_f32 < 0.0) ? 0.0 : x_f32;
+//         } else if (texref->addressMode[0] == cudaAddressModeWrap) {
+//           x_f32 = x_f32 - floor(x_f32);
+//         }
+
+//         if (texref->filterMode == cudaFilterModeLinear) {
+//           float xb = x_f32 * width - 0.5;
+//           alpha = xb - floor(xb);
+//           alpha = reduce_precision(alpha, 9);
+//           beta = 0.0;
+
+//           x = (int)floor(xb);
+//           y = 0;
+//         } else {
+//           x = (int)floor(x_f32 * width);
+//           y = 0;
+//         }
+//       } else {
+//         switch (c_type) {
+//           case S32_TYPE:
+//             x = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].s32;
+//             assert(texref->filterMode == cudaFilterModePoint);
+//             break;
+//           case F32_TYPE:
+//             x_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32;
+//             alpha = x_f32 -
+//                     floor(x_f32);  // offset into subtexel (for linear sampling)
+//             x = (int)x_f32;
+//             break;
+//           default:
+//             assert(0 && "Unsupported texture coordinate type.");
+//         }
+//         // handle texture fetch that exceeded boundaries
+//         if (texref->addressMode[0] == cudaAddressModeClamp) {
+//           x = (x > width - 1) ? (width - 1) : x;
+//           x = (x < 0) ? 0 : x;
+//         } else if (texref->addressMode[0] == cudaAddressModeWrap) {
+//           x = x % width;
+//         }
+//       }
+//       width *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
+//                 cuArray->desc.z) /
+//                8;
+//       x *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
+//             cuArray->desc.z) /
+//            8;
+//       tex_array_index = tex_array_base + x;
+
+//       break;
+//     case GEOM_MODIFIER_2D:
+//       width = cuArray->width;
+//       height = cuArray->height;
+//       if (texref->normalized) {
+//         x_f32 = reduce_precision(
+//             thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32, 16);
+//         y_f32 = reduce_precision(
+//             thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[1].f32, 15);
+
+//         if (texref->addressMode[0]) {  // clamp
+//           if (x_f32 < 0) x_f32 = 0;
+//           if (x_f32 >= 1) x_f32 = 1 - 1 / x_f32;
+//         } else {  // wrap
+//           x_f32 = x_f32 - floor(x_f32);
+//         }
+//         if (texref->addressMode[1]) {  // clamp
+//           if (y_f32 < 0) y_f32 = 0;
+//           if (y_f32 >= 1) y_f32 = 1 - 1 / y_f32;
+//         } else {  // wrap
+//           y_f32 = y_f32 - floor(y_f32);
+//         }
+
+//         if (texref->filterMode == cudaFilterModeLinear) {
+//           float xb = x_f32 * width - 0.5;
+//           float yb = y_f32 * height - 0.5;
+//           alpha = xb - floor(xb);
+//           beta = yb - floor(yb);
+//           alpha = reduce_precision(alpha, 9);
+//           beta = reduce_precision(beta, 9);
+
+//           x = (int)floor(xb);
+//           y = (int)floor(yb);
+//         } else {
+//           x = (int)floor(x_f32 * width);
+//           y = (int)floor(y_f32 * height);
+//         }
+//       } else {
+//         x_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[0].f32;
+//         y_f32 = thread->get_gpu()->gpgpu_ctx->func_sim->ptx_tex_regs[1].f32;
+
+//         alpha = x_f32 - floor(x_f32);
+//         beta = y_f32 - floor(y_f32);
+
+//         x = (int)x_f32;
+//         y = (int)y_f32;
+//         if (texref->addressMode[0]) {  // clamp
+//           if (x < 0) x = 0;
+//           if (x >= (int)width) x = width - 1;
+//         } else {  // wrap
+//           x = x % width;
+//           if (x < 0) x *= -1;
+//         }
+//         if (texref->addressMode[1]) {  // clamp
+//           if (y < 0) y = 0;
+//           if (y >= (int)height) y = height - 1;
+//         } else {  // wrap
+//           y = y % height;
+//           if (y < 0) y *= -1;
+//         }
+//       }
+
+//       width *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
+//                 cuArray->desc.z) /
+//                8;
+//       x *= (cuArray->desc.w + cuArray->desc.x + cuArray->desc.y +
+//             cuArray->desc.z) /
+//            8;
+//       tex_array_index = tex_array_base + (x + width * y);
+//       break;
+//     default:
+//       assert(0);
+//       break;
+//   }
+//   switch (to_type) {
+//     case U8_TYPE:
+//     case U16_TYPE:
+//     case U32_TYPE:
+//     case B8_TYPE:
+//     case B16_TYPE:
+//     case B32_TYPE:
+//     case S8_TYPE:
+//     case S16_TYPE:
+//     case S32_TYPE: {
+//       unsigned long long elementOffset = 0;  // offset into the next element
+//       mem->read(tex_array_index, cuArray->desc.x / 8, &data1.u32);
+//       elementOffset += cuArray->desc.x / 8;
+//       if (cuArray->desc.y) {
+//         mem->read(tex_array_index + elementOffset, cuArray->desc.y / 8,
+//                   &data2.u32);
+//         elementOffset += cuArray->desc.y / 8;
+//         if (cuArray->desc.z) {
+//           mem->read(tex_array_index + elementOffset, cuArray->desc.z / 8,
+//                     &data3.u32);
+//           elementOffset += cuArray->desc.z / 8;
+//           if (cuArray->desc.w)
+//             mem->read(tex_array_index + elementOffset, cuArray->desc.w / 8,
+//                       &data4.u32);
+//         }
+//       }
+//       break;
+//     }
+//     case B64_TYPE:
+//     case U64_TYPE:
+//     case S64_TYPE:
+//       mem->read(tex_array_index, 8, &data1.u64);
+//       if (cuArray->desc.y) {
+//         mem->read(tex_array_index + 8, 8, &data2.u64);
+//         if (cuArray->desc.z) {
+//           mem->read(tex_array_index + 16, 8, &data3.u64);
+//           if (cuArray->desc.w) mem->read(tex_array_index + 24, 8, &data4.u64);
+//         }
+//       }
+//       break;
+//     case F16_TYPE:
+//       assert(0);
+//       break;
+//     case F32_TYPE: {
+//       if (texref->filterMode == cudaFilterModeLinear) {
+//         texAddr_t b_lim = wrap;
+//         if (texref->addressMode[0] == cudaAddressModeClamp) {
+//           b_lim = clamp;
+//         }
+//         size_t elem_size = (cuArray->desc.x + cuArray->desc.y +
+//                             cuArray->desc.z + cuArray->desc.w) /
+//                            8;
+//         size_t elem_ofst = 0;
+
+//         data1.f32 =
+//             tex_linf_sampling(mem, tex_array_base, x + elem_ofst, y, width,
+//                               height, elem_size, alpha, beta, b_lim);
+//         elem_ofst += cuArray->desc.x / 8;
+//         if (cuArray->desc.y) {
+//           data2.f32 =
+//               tex_linf_sampling(mem, tex_array_base, x + elem_ofst, y, width,
+//                                 height, elem_size, alpha, beta, b_lim);
+//           elem_ofst += cuArray->desc.y / 8;
+//           if (cuArray->desc.z) {
+//             data3.f32 =
+//                 tex_linf_sampling(mem, tex_array_base, x + elem_ofst, y, width,
+//                                   height, elem_size, alpha, beta, b_lim);
+//             elem_ofst += cuArray->desc.z / 8;
+//             if (cuArray->desc.w)
+//               data4.f32 = tex_linf_sampling(mem, tex_array_base, x + elem_ofst,
+//                                             y, width, height, elem_size, alpha,
+//                                             beta, b_lim);
+//           }
+//         }
+//       } else {
+//         mem->read(tex_array_index, cuArray->desc.x / 8, &data1.f32);
+//         if (cuArray->desc.y) {
+//           mem->read(tex_array_index + 4, cuArray->desc.y / 8, &data2.f32);
+//           if (cuArray->desc.z) {
+//             mem->read(tex_array_index + 8, cuArray->desc.z / 8, &data3.f32);
+//             if (cuArray->desc.w)
+//               mem->read(tex_array_index + 12, cuArray->desc.w / 8, &data4.f32);
+//           }
+//         }
+//       }
+//     } break;
+//     case F64_TYPE:
+//     case FF64_TYPE:
+//       mem->read(tex_array_index, 8, &data1.f64);
+//       if (cuArray->desc.y) {
+//         mem->read(tex_array_index + 8, 8, &data2.f64);
+//         if (cuArray->desc.z) {
+//           mem->read(tex_array_index + 16, 8, &data3.f64);
+//           if (cuArray->desc.w) mem->read(tex_array_index + 24, 8, &data4.f64);
+//         }
+//       }
+//       break;
+//     default:
+//       assert(0);
+//       break;
+//   }
+//   int x_block_coord, y_block_coord, memreqindex, blockoffset;
+
+//   switch (dimension) {
+//     case GEOM_MODIFIER_1D:
+//       thread->m_last_effective_address = tex_array_index;
+//       break;
+//     case GEOM_MODIFIER_2D:
+//       x_block_coord = x >> (texInfo->Tx_numbits + texInfo->texel_size_numbits);
+//       y_block_coord = y >> texInfo->Ty_numbits;
+
+//       memreqindex =
+//           ((y_block_coord * cuArray->width / texInfo->Tx) + x_block_coord) << 6;
+
+//       blockoffset = (x % (texInfo->Tx * texInfo->texel_size) +
+//                      (y % (texInfo->Ty)
+//                       << (texInfo->Tx_numbits + texInfo->texel_size_numbits)));
+//       memreqindex += blockoffset;
+//       thread->m_last_effective_address =
+//           tex_array_base + memreqindex;  // tex_array_index;
+//       break;
+//     default:
+//       assert(0);
+//   }
+//   thread->m_last_memory_space = tex_space;
+
+//   // normalize output into floating point numbers according to the texture read
+//   // mode
+//   if (texAttr->m_readmode == cudaReadModeNormalizedFloat) {
+//     textureNormalizeOutput(cuArray->desc, data1, data2, data3, data4);
+//   } else {
+//     assert(texAttr->m_readmode == cudaReadModeElementType);
+//   }
+
+//   thread->set_vector_operand_values(dst, data1, data2, data3, data4);
+// }
 
 void txq_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   inst_not_implemented(pI);
@@ -7440,7 +7512,7 @@ void store_deref_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    VSIM_DPRINTF("gpgpusim: rt_alloc_mem implementation\n");
+    // VSIM_DPRINTF("gpgpusim: rt_alloc_mem implementation\n");
     if(print_debug_insts)
     {
       printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
@@ -7448,8 +7520,14 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                                         thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
       fflush(stdout);
     }
-  assert(pI->get_num_operands() == 3);
-  ptx_reg_t src1_data, src2_data, data;
+  std::string identifier = "UNUSED";
+  if (!VulkanRayTracing::use_CRISP) {
+    assert(pI->get_num_operands() == 3);
+  } else {
+    assert(pI->get_num_operands() == 5);
+  }
+  ptx_reg_t src1_data, src2_data, src3_data, data;
+  unsigned index;
 
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
@@ -7458,11 +7536,33 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   src1_data = thread->get_operand_value(src1, dst, U32_TYPE, thread, 0);
   src2_data = thread->get_operand_value(src2, dst, U32_TYPE, thread, 0);
 
-
+  unsigned thread_id = thread->get_thread_id();
   std::string name = dst.get_symbol()->name();
   uint32_t size = src1_data.u32;
   nir_variable_mode type = (nir_variable_mode)src2_data.u32;
   uint64_t address = NULL;
+
+  if (VulkanRayTracing::use_CRISP) {
+    const operand_info &src3 = pI->src3();
+    src3_data = thread->get_operand_value(src3, dst, U32_TYPE, thread, 0);
+    index = src3_data.u32;
+    if (type == nir_var_shader_in || type == nir_var_shader_out) {
+      if (size == 64) {
+        size = 16;  // I dont know
+      } else if (size == 36) {
+        size = 12;  // I dont know
+      } else if (size == 16) {
+        size = 8;   // I dont know
+      } else {
+        assert(0);
+      }
+    }
+    if (type != nir_var_mem_ubo) {
+      identifier = pI->src4().get_symbol()->name();
+    }
+  } else {
+    index = -1;
+  }
   
   // printf("########## variable name = %s, size = %d\n", name.c_str(), size);
   variable_decleration_entry* variable_decleration = thread->RT_thread_data->get_variable_decleration_entry(type, name, size);
@@ -7482,7 +7582,8 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   } 
   else {
-    address = thread->RT_thread_data->add_variable_decleration_entry(type, name, size);
+    address = thread->RT_thread_data->add_variable_decleration_entry(
+        type, name, identifier, size, index, thread_id);
   }
 
   data.u64 = address;
@@ -7898,4 +7999,46 @@ void copysignf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     dst_data.f32 *= 1;
   
   thread->set_operand_value(dst, dst_data, F32_TYPE, thread, pI);
+}
+
+void load_ubo_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // load_ubo %ssa_8_0, %ssa_8_1, %ssa_8_2, %ssa_8_3, %ssa_7, %ssa_6, 0, 4, 0, 0, 0;
+  assert(pI->get_num_operands() == 11);
+  ptx_reg_t src0_data, src1_data, src2_data, src3_data, src4_data, src5_data;
+  
+  const operand_info &src0 = pI->operand_lookup(0);
+
+  const operand_info &src1 = pI->operand_lookup(1);
+
+  const operand_info &src2 = pI->operand_lookup(2);
+
+  const operand_info &src3 = pI->operand_lookup(3);
+
+  const operand_info &src4 = pI->operand_lookup(4);
+  src4_data = thread->get_operand_value(src4, src4, U32_TYPE, thread, 1);
+  unsigned index = (src4_data.u32);
+
+  memory_space *mem = thread->get_global_memory();
+
+  const operand_info &src5 = pI->operand_lookup(5);
+  src5_data = thread->get_operand_value(src5, src5, U32_TYPE, thread, 1);
+  unsigned byte_offset = src5_data.u32;
+  addr_t addr = VulkanRayTracing::getUBOAddr(index, byte_offset);
+
+  mem->read(addr, 4, &src0_data.f32);
+  thread->set_operand_value(src0, src0_data, F32_TYPE, thread, pI);
+  mem->read(addr + 4, 4, &src1_data.f32);
+  thread->set_operand_value(src1, src1_data, F32_TYPE, thread, pI);
+  mem->read(addr + 8, 4, &src2_data.f32);
+  thread->set_operand_value(src2, src2_data, F32_TYPE, thread, pI);
+  mem->read(addr + 12, 4, &src3_data.f32);
+  thread->set_operand_value(src3, src3_data, F32_TYPE, thread, pI);
+
+  memory_space_t space = pI->get_space();
+
+  thread->m_last_effective_address = addr;
+  thread->m_last_memory_space = space;
+
+  unsigned thread_id = thread->get_thread_id();
+  // printf("ubo: thread_id %u, index %u, byte_offset %u, addr %llu, data %f %f %f %f\n", thread_id, index, byte_offset, addr, src0_data.f32, src1_data.f32, src2_data.f32, src3_data.f32);
 }

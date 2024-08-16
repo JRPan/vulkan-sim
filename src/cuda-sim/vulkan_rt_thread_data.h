@@ -78,16 +78,63 @@ typedef struct Vulkan_RT_thread_data {
         return NULL;
     }
 
-    uint64_t add_variable_decleration_entry(nir_variable_mode type, std::string name, uint32_t size) {
-        variable_decleration_entry entry;
-        entry.type = type;
-        entry.name = name;
-        // entry.address = (uint64_t) malloc(size);
-        entry.address = (uint64_t) VulkanRayTracing::gpgpusim_alloc(size);
-        entry.size = size;
-        variable_decleration_table.push_back(entry);
+    uint64_t add_variable_decleration_entry(nir_variable_mode type,
+                                            std::string name,
+                                            std::string identifier,
+                                            uint32_t size, unsigned index,
+                                            unsigned thread_id) {
+      gpgpu_context* ctx = GPGPU_Context();
+      CUctx_st* context = GPGPUSim_Context(ctx);
+      gpgpu_sim* m_gpu = context->get_device()->get_gpgpu();
+      variable_decleration_entry entry;
+      entry.type = type;
+      entry.name = name;
+      // entry.address = (uint64_t) malloc(size);
+      if (VulkanRayTracing::use_CRISP) {
+        if (!VulkanRayTracing::is_FS) {
+          if (type == nir_var_shader_in) {
+            entry.address = VulkanRayTracing::getVertexAddr(index, thread_id);
+          } else if (type == nir_var_shader_out) {
+            if (VulkanRayTracing::VertexMeta->vertex_out_devptr.find(identifier) ==
+                VulkanRayTracing::VertexMeta->vertex_out_devptr.end()) {
+              uint32_t* dev_ptr = VulkanRayTracing::gpgpusim_alloc(
+                  VulkanRayTracing::thread_count * size);
+              // m_gpu->valid_addr_start[name] = (uint64_t)dev_ptr;
+              // m_gpu->valid_addr_end[name] = (uint64_t)dev_ptr +
+              // VulkanRayTracing::thread_count * size;
+              VulkanRayTracing::VertexMeta->vertex_out_devptr.insert(
+                  {identifier, dev_ptr});
+              VulkanRayTracing::VertexMeta->vertex_out_stride.insert(
+                  {identifier, size});
+            }
+            entry.address =
+                VulkanRayTracing::getVertexOutAddr(identifier, thread_id);
+          } else if (type == nir_var_mem_ubo) {
+            entry.address = 0;
+          } else {
+            assert(0);
+          }
+        } else {
+          // FS
+          if (type == nir_var_shader_in) {
+            entry.address =
+                VulkanRayTracing::getVertexOutAddr(identifier, thread_id);
+          } else if (type == nir_var_shader_out) {
+            assert(identifier == "FRAG_RESULT_DATA0_xyzw");
+            entry.address = VulkanRayTracing::getFBOAddr(thread_id);
+          } else if (type == nir_var_mem_ubo) {
+            entry.address = 0;
+          } else {
+            assert(0);
+          }
+        }
+      } else {
+        entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
+      }
+      entry.size = size;
+      variable_decleration_table.push_back(entry);
 
-        return entry.address;
+      return entry.address;
     }
 
     variable_decleration_entry* get_hitAttribute() {
@@ -106,7 +153,7 @@ typedef struct Vulkan_RT_thread_data {
         variable_decleration_entry* hitAttribute = get_hitAttribute();
         float* address;
         if(hitAttribute == NULL) {
-            address = (float*)add_variable_decleration_entry(nir_var_ray_hit_attrib, "attribs", 12);
+            address = (float*)add_variable_decleration_entry(nir_var_ray_hit_attrib, "attribs", "UNUSED", 12, 0, 0);
         }
         else {
             assert (hitAttribute->type == nir_var_ray_hit_attrib);

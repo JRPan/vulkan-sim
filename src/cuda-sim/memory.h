@@ -101,6 +101,7 @@ class memory_space {
   virtual void write_only(mem_addr_t index, mem_addr_t offset, size_t length,
                           const void *data) = 0;
   virtual void read(mem_addr_t addr, size_t length, void *data) const = 0;
+  virtual void read_from_gpu(mem_addr_t addr, size_t length, void *data) const = 0;
   virtual void print(const char *format, FILE *fout) const = 0;
   virtual void set_watch(addr_t addr, unsigned watchpoint) = 0;
   virtual void bind_vulkan_buffer(void* bufferAddr, unsigned bufferSize, void* devPtr) = 0;
@@ -116,6 +117,7 @@ class memory_space_impl : public memory_space {
   virtual void write_only(mem_addr_t index, mem_addr_t offset, size_t length,
                           const void *data);
   virtual void read(mem_addr_t addr, size_t length, void *data) const;
+  virtual void read_from_gpu(mem_addr_t addr, size_t length, void *data) const;
   virtual void print(const char *format, FILE *fout) const;
 
   virtual void set_watch(addr_t addr, unsigned watchpoint);
@@ -130,7 +132,7 @@ class memory_space_impl : public memory_space {
   typedef mem_map<mem_addr_t, mem_storage<BSIZE> > map_t;
   map_t m_data;
   std::map<unsigned, mem_addr_t> m_watchpoints;
-  std::map<void*, void*> m_vulkan_address_map;
+  std::unordered_map<void*, void*> m_vulkan_address_map;
 };
 
 #endif

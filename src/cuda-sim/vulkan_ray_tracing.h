@@ -36,6 +36,7 @@
 
 #elif defined(MESA_USE_LVPIPE_DRIVER)
 #include "lvp_acceleration_structure.h"
+#include "gallium/drivers/llvmpipe/lp_texture.h"
 #endif
 
 #include "intersection_table.h"
@@ -48,6 +49,8 @@
 #include "compiler/shader_enums.h"
 #include <fstream>
 #include <cmath>
+#include <unordered_map>
+#include <mutex>
 
 #define MAX(a,b) (((a)>(b))?(a):(b))
 #define MIN(a,b) (((a)<(b))?(a):(b))
@@ -220,6 +223,121 @@ typedef struct texture_metadata
 } texture_metadata;
 
 
+#define MAX_VERTEX 28
+typedef struct VertexAttrib {
+    std::vector<unsigned> location;
+    std::vector<unsigned> binding;
+    std::vector<unsigned> offset;
+    std::vector<unsigned> rate;
+} VertexAttrib;
+
+typedef struct desc_ptr {
+    void *addr;
+    uint32_t size;
+    bool is_texture;
+
+    desc_ptr() {
+        addr = NULL;
+        size = 0;
+        is_texture = false;
+    }
+} desc_ptr;
+
+typedef struct issue_info {
+    unsigned shader_id;
+    unsigned batch_index;
+    std::vector<unsigned> warp;
+    issue_info(unsigned bid, unsigned sid, std::vector<unsigned> w) {
+        shader_id = sid;
+        batch_index = bid;
+        warp = w;
+    }
+} issue_info;
+
+typedef struct vertex_metadata
+{
+    struct pipe_context *pipe;
+    // assuming all data are 4-Byte
+    // *device* vertex buffer
+    std::vector<unsigned> vb;
+    std::vector<std::unordered_map<unsigned, unsigned>> batched_idx_to_tid;
+    std::vector<std::vector<unsigned>> batched_prim;
+    std::unordered_set<unsigned> vb_deactive;
+    // std::unordered_map<unsigned, unsigned> index_to_batched;
+    float *vertex_buffers[MAX_VERTEX] = {NULL};
+    void *ubo_addr[PIPE_SHADER_MESH_TYPES][16] = {NULL};
+    void *ubo_addr_dev[PIPE_SHADER_MESH_TYPES][16] = {NULL};
+    unsigned ubo_offset[PIPE_SHADER_MESH_TYPES][16] = {0};
+    unsigned ubo_size[PIPE_SHADER_MESH_TYPES][16] = {0};
+    uint32_t* vertex_addr[MAX_VERTEX] = {NULL};
+    // vertex buffer size
+    uint32_t vertex_size[MAX_VERTEX] = {0};
+    uint32_t vertex_count[MAX_VERTEX] = {0};
+    uint32_t vertex_stride[MAX_VERTEX] = {0};
+
+    void* index_buffer = NULL;
+    unsigned index_size = -1;
+    unsigned index_buf_size = 0;
+    uint32_t *constants_dev_addr = 0;
+
+    std::map<std::string, uint32_t*> vertex_out_devptr;
+    std::unordered_map<std::string, unsigned> vertex_out_stride;
+    std::unordered_map<std::string, unsigned> vertex_out_count;
+    std::unordered_map<std::string, unsigned> vertex_out_size;
+    std::unordered_map<std::string, float*> vertex_out;
+    std::vector<std::vector<unsigned>> primitives;
+    // vertex-post processing
+    // tranform & clipping
+    std::vector<std::vector<float>> vertex_ndc;
+    std::vector<std::vector<float>> vertex_screen;
+    std::vector<std::vector<float>> vertex_raw;
+
+    // FS
+    std::unordered_map<std::string, std::vector<std::vector<float>>> attribs;
+    std::vector<std::vector<unsigned>> target_sm;
+    std::vector<unsigned> thread_info_pixel;
+    std::vector<issue_info> issue_order;
+    std::unordered_map<unsigned, unsigned> pixel_map;
+
+    unsigned VertexCountPerInstance;
+    unsigned StartVertexLocation;
+    unsigned InstanceCount;
+    unsigned StartInstanceLocation;
+    unsigned BaseVertexLocation;
+    VkCompareOp DepthcmpOp;
+    struct VertexAttrib *VertexAttrib = NULL;
+    VkViewport viewports;
+    struct anv_descriptor_set *descriptor_set[8] = {NULL};
+
+    ~vertex_metadata() {
+      for (auto attrib : vertex_out) {
+        delete[] attrib.second;
+      }
+      delete VertexAttrib;
+    }
+
+}vertex_metadata;
+
+typedef struct FBO {
+  float *fbo = NULL;
+  float *fbo_dev = NULL;
+  float *depthout = NULL;
+  unsigned fbo_size = 0;
+  unsigned fbo_count = 0;
+  unsigned fbo_stride = 0;
+  unsigned width = -1;
+  unsigned height = -1;
+  unsigned x = -1;
+  unsigned y = -1;
+  std::vector<float> thread_info_lod;
+
+//   ~FBO() {
+//     delete[] fbo;
+//     delete[] depthout;
+//   }
+} FBO;
+
+
 #if defined(MESA_USE_INTEL_DRIVER)
 #define DESCRIPTOR_SET_STRUCT anv_descriptor_set
 #define DESCRIPTOR_STRUCT anv_descriptor
@@ -369,6 +487,63 @@ public:
     static void* allocBuffer(void* bufferAddr, uint64_t bufferSize);
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);
+
+    // CRISP
+    static bool use_CRISP;
+    static std::mutex mtx;
+    static struct FBO *FBO;
+    static struct vertex_metadata *VertexMeta;
+    static unsigned draw;
+    static bool is_FS;
+    static unsigned thread_count;
+    static unsigned batch_index;
+    static unsigned batch_size;
+    static std::set<unsigned> active_vs_threads;
+    static std::deque<struct vertex_metadata* > draw_meta;
+    static std::unordered_map<void *, unsigned> pipeline_shader_map;
+    static std::unordered_map<void *, struct VertexAttrib *> pipeline_vertex_map;
+    static void VulkanRayTracing::run_shader(unsigned shader_id,
+                                             unsigned thread_count);
+    static void VulkanRayTracing::vkCmdDraw();
+    static void VulkanRayTracing::read_binary_file(std::string path, void *ptr,
+                                                   unsigned size);
+    static void VulkanRayTracing::saveIndexBuffer(struct anv_buffer *ptr,
+                                                  VkIndexType type);
+    static uint64_t getVertexAddr(uint32_t buffer_index, uint32_t tid);
+    static uint64_t getVertexOutAddr(std::string index, uint32_t tid);
+    static uint64_t VulkanRayTracing::getFBOAddr(uint32_t tid);
+    static void VulkanRayTracing::getFragCoord(uint32_t thread_id, uint32_t &x,
+                                               uint32_t &y);
+    static uint64_t VulkanRayTracing::getConst();
+    static float VulkanRayTracing::getTexLOD(unsigned thread_id);
+    static void bindVertex(unsigned index, float *addr, unsigned size, unsigned stride);
+    static void saveIndexBuffer(void *ptr, unsigned index_size, unsigned buf_size);
+    static void saveVertexInfo(unsigned location, unsigned binding, unsigned offset, unsigned rate);
+    static void saveInstance(unsigned instanceCount, unsigned startInstance);
+    static void saveUBO(pipe_shader_type stage, unsigned index, unsigned offset, unsigned size, void *addr);
+    static void savePipeCtx(void *pipe);
+    static addr_t getUBOAddr( unsigned index, unsigned offset);
+    static void post_vertex();
+    static void generate_frag(unsigned batch_index);
+    static void genLoD();
+    static void cleanup();
+    static void dumpFBO();
+    static void pre_frag();
+    static float linearRGB_to_SRGB(float s) {
+      // assert(0 <= s && s <= 1);
+      if (s < 0.0031308)
+        return s * 12.92;
+      else
+        return 1.055 * std::pow(s, 1 / 2.4) - 0.055;
+    }
+
+    static float SRGB_to_linearRGB(float s) {
+      assert(0 <= s && s <= 1);
+      if (s <= 0.04045)
+        return s / 12.92;
+      else
+        return pow(((s + 0.055) / 1.055), 2.4);
+    }
 };
 
 #endif /* VULKAN_RAY_TRACING_H */

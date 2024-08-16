@@ -2147,10 +2147,12 @@ void shader_core_ctx::execute() {
   m_stats->n_shd_warps = other_warps;
   m_stats->n_empty_warps = empty_warps;
 
-  unsigned rt_ratio_bucket = rt_active_warps * 10 / (other_warps + rt_active_warps);
-  unsigned active_ratio_bucket = (rt_active_warps + other_warps) * 10 / m_config->max_warps_per_shader;
-  m_stats->rt_warp_dist[rt_ratio_bucket]++;
-  m_stats->empty_warp_dist[active_ratio_bucket]++;
+  if (rt_active_warps != 0) {
+    unsigned rt_ratio_bucket = rt_active_warps * 10 / (other_warps + rt_active_warps);
+    unsigned active_ratio_bucket = (rt_active_warps + other_warps) * 10 / m_config->max_warps_per_shader;
+    m_stats->rt_warp_dist[rt_ratio_bucket]++;
+    m_stats->empty_warp_dist[active_ratio_bucket]++;
+  }
 
   if (m_config->model == AWARE_RECONVERGENCE) {
     for (unsigned i = 0; i < m_warp_count; ++i) {

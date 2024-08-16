@@ -358,6 +358,9 @@ class ptx_thread_info {
   unsigned get_hw_ctaid() const { return m_hw_ctaid; }
   unsigned get_hw_wid() const { return m_hw_wid; }
   unsigned get_hw_sid() const { return m_hw_sid; }
+  unsigned get_thread_id() {
+    return get_tid().x + get_ctaid().x * get_ntid().x;
+  }
   core_t *get_core() { return m_core; }
 
   unsigned get_icount() const { return m_icount; }

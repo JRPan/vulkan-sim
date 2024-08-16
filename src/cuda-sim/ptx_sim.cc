@@ -471,7 +471,7 @@ bool ptx_thread_info::callstack_pop() {
 
   // write return value into caller frame
   if (rv_dst != NULL) copy_buffer_to_frame(this, buffer);
-
+  assert(m_callstack.empty());
   return m_callstack.empty();
 }
 
