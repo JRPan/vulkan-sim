@@ -278,7 +278,6 @@ typedef struct vertex_metadata
     void* index_buffer = NULL;
     unsigned index_size = -1;
     unsigned index_buf_size = 0;
-    uint32_t *constants_dev_addr = 0;
 
     std::map<std::string, uint32_t*> vertex_out_devptr;
     std::unordered_map<std::string, unsigned> vertex_out_stride;
@@ -298,6 +297,7 @@ typedef struct vertex_metadata
     std::vector<unsigned> thread_info_pixel;
     std::vector<issue_info> issue_order;
     std::unordered_map<unsigned, unsigned> pixel_map;
+    std::unordered_map<void *, void *> dev_to_host;
 
     unsigned VertexCountPerInstance;
     unsigned StartVertexLocation;
@@ -322,6 +322,7 @@ typedef struct FBO {
   float *fbo = NULL;
   float *fbo_dev = NULL;
   float *depthout = NULL;
+  float *fbo_debug = NULL;
   unsigned fbo_size = 0;
   unsigned fbo_count = 0;
   unsigned fbo_stride = 0;
@@ -373,7 +374,7 @@ private:
     static std::vector<std::vector<Descriptor> > descriptors;
     static std::ofstream imageFile;
     static bool firstTime;
-    static struct DESCRIPTOR_SET_STRUCT *descriptorSet;
+    static struct DESCRIPTOR_SET_STRUCT *descriptorSet[MAX_DESCRIPTOR_SETS];
 
     // For Launcher
     static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
@@ -419,7 +420,7 @@ public:
     static void setPipelineInfo(VkRayTracingPipelineCreateInfoKHR* pCreateInfos);
     static void setGeometries(VkAccelerationStructureGeometryKHR* pGeometries, uint32_t geometryCount);
     static void setAccelerationStructure(VkAccelerationStructureKHR accelerationStructure);
-    static void setDescriptorSet(struct DESCRIPTOR_SET_STRUCT *set);
+    static void setDescriptorSet(unsigned index, struct DESCRIPTOR_SET_STRUCT *set);
     static void invoke_gpgpusim();
     static uint32_t registerShaders(char * shaderPath, gl_shader_stage shaderType);
     static void vkCmdTraceRaysKHR( // called by vulkan application
@@ -514,15 +515,19 @@ public:
     static uint64_t VulkanRayTracing::getFBOAddr(uint32_t tid);
     static void VulkanRayTracing::getFragCoord(uint32_t thread_id, uint32_t &x,
                                                uint32_t &y);
-    static uint64_t VulkanRayTracing::getConst();
     static float VulkanRayTracing::getTexLOD(unsigned thread_id);
     static void bindVertex(unsigned index, float *addr, unsigned size, unsigned stride);
     static void saveIndexBuffer(void *ptr, unsigned index_size, unsigned buf_size);
     static void saveVertexInfo(unsigned location, unsigned binding, unsigned offset, unsigned rate);
     static void saveInstance(unsigned instanceCount, unsigned startInstance);
     static void saveUBO(pipe_shader_type stage, unsigned index, unsigned offset, unsigned size, void *addr);
+    static void saveIntrinsic(unsigned StartVertex, unsigned BaseVertex, unsigned instanceCount, unsigned startInstance);
+    static void saveViewport(float width, float height, float x, float y, unsigned depthcmpOp, float min_depth, float max_depth);
     static void savePipeCtx(void *pipe);
+    static void saveConst(void *const);
     static addr_t getUBOAddr( unsigned index, unsigned offset);
+    static addr_t getConst(unsigned offset);
+    static void batch_vertex();
     static void post_vertex();
     static void generate_frag(unsigned batch_index);
     static void genLoD();

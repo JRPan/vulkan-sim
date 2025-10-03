@@ -111,6 +111,10 @@ typedef struct Vulkan_RT_thread_data {
                 VulkanRayTracing::getVertexOutAddr(identifier, thread_id);
           } else if (type == nir_var_mem_ubo) {
             entry.address = 0;
+          } else if (type == nir_var_mem_push_const) {
+            entry.address = 0;          
+          } else if (type == nir_var_function_temp) {
+            entry.address = (uint64_t)VulkanRayTracing::gpgpusim_alloc(size);
           } else {
             assert(0);
           }
@@ -123,6 +127,10 @@ typedef struct Vulkan_RT_thread_data {
             assert(identifier == "FRAG_RESULT_DATA0_xyzw");
             entry.address = VulkanRayTracing::getFBOAddr(thread_id);
           } else if (type == nir_var_mem_ubo) {
+            entry.address = 0;
+          } else if (type == nir_var_mem_push_const) {
+            entry.address = 0;
+          } else if (type == nir_var_mem_ssbo) {
             entry.address = 0;
           } else {
             assert(0);

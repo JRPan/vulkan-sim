@@ -85,9 +85,13 @@ extern void gpgpusim_addTreelets_cpp(VkAccelerationStructureKHR accelerationStru
     VulkanRayTracing::setAccelerationStructure(accelerationStructure);
 }
 
-extern "C" void gpgpusim_setDescriptorSet(struct DESCRIPTOR_SET_STRUCT *set)
+extern "C" void gpgpusim_setDescriptorSet(unsigned index, struct DESCRIPTOR_SET_STRUCT *set)
 {
-    VulkanRayTracing::setDescriptorSet(set);
+    VulkanRayTracing::setDescriptorSet(index, set);
+}
+
+extern "C" void  gpgpusim_saveViewport(float width, float height, float x, float y, unsigned depthcmpOp, float min_depth, float max_depth) {
+    VulkanRayTracing::saveViewport(width, height, x, y, depthcmpOp, min_depth, max_depth);
 }
 
 
@@ -116,7 +120,7 @@ extern void gpgpusim_vkCmdTraceRaysKHR_cpp(
 
 extern void gpgpusim_setDescriptorSet_cpp(void *set)
 {
-    VulkanRayTracing::setDescriptorSet((struct DESCRIPTOR_SET_STRUCT*) set);
+    // VulkanRayTracing::setDescriptorSet((struct DESCRIPTOR_SET_STRUCT*) set);
 }
 
 extern void gpgpusim_setDescriptorSetFromLauncher_cpp(void *address, void *deviceAddress, uint32_t setID, uint32_t descID)
@@ -209,6 +213,10 @@ extern "C" void  gpgpusim_saveUBO(unsigned stage, unsigned index, unsigned offse
 
 extern "C" void  gpgpusim_savePipeCtx(void *ctx) {
     VulkanRayTracing::savePipeCtx(ctx);
+}
+
+extern "C" void gpgpusim_saveIntrinsic(unsigned StartVertex, unsigned BaseVertex, unsigned instanceCount, unsigned startInstance) {
+    VulkanRayTracing::saveIntrinsic(StartVertex, BaseVertex, instanceCount, startInstance);
 }
 
 #endif /* GPGPUSIM_CALLS_FROM_MESA_CC */

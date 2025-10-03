@@ -59,13 +59,17 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
                                      const void *data,
                                      class ptx_thread_info *thd,
                                      const ptx_instruction *pI) {
-  if(!use_external_launcher && !VulkanRayTracing::use_CRISP) {
+  if(!use_external_launcher) {
+    if (VulkanRayTracing::use_CRISP && addr == 0) {
+      return; //extra threads
+    }
     void* vulkan_addr = find_vulkan_buffer(addr);
 
     if (vulkan_addr) {
       memcpy(vulkan_addr, data, length);
     }
     else {
+      assert(0);
       printf("gpgpusim: WARNING: Memory backing buffer not found for address %p. This data write may be invalid\n", addr);
       memcpy(addr, data, length);
     }
@@ -172,6 +176,7 @@ void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
       memcpy(data, vulkan_addr, length);
     }
     else {
+      assert(0);
       printf("gpgpusim: WARNING: Memory backing buffer not found for address %p. This data read may be invalid\n", addr);
       memcpy(data, addr, length);
     }

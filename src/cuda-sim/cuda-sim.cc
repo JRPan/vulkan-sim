@@ -573,26 +573,45 @@ void ptx_instruction::set_fp_or_int_archop() {
   if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
-      (m_opcode == CALL_OP) || (m_opcode == TRACE_RAY_OP) || (m_opcode == CALL_MISS_SHADER_OP) ||
-      (m_opcode == CALL_CLOSEST_HIT_SHADER_OP) || (m_opcode == LD_RAY_LAUNCH_ID_OP) ||
+      (m_opcode == CALL_OP) || (m_opcode == TRACE_RAY_OP) ||
+      (m_opcode == CALL_MISS_SHADER_OP) ||
+      (m_opcode == CALL_CLOSEST_HIT_SHADER_OP) ||
+      (m_opcode == LD_RAY_LAUNCH_ID_OP) ||
       (m_opcode == LD_RAY_LAUNCH_SIZE_OP) || (m_opcode == LD_VK_DESC_OP) ||
       (m_opcode == IMG_DEREF_ST_OP) || (m_opcode == RT_ALLOC_MEM_OP) ||
-      (m_opcode == DEREF_VAR_OP) || (m_opcode == WRAP_32_4_OP) || (m_opcode == UNWRAP_32_4_OP) ||
-      (m_opcode == GET_ELEMENT_32_OP) || (m_opcode == SET_ELEMENT_32_OP) ||
-      (m_opcode == LOAD_RAY_WORLD_TO_OBJECT_OP) || (m_opcode == LOAD_RAY_OBJECT_TO_WORLD_OP) ||
-      (m_opcode == LOAD_RAY_WORLD_DIRECTION_OP) || (m_opcode == LOAD_PRIMITIVE_ID_OP) ||
-      (m_opcode == LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) || (m_opcode == END_TRACE_RAY_OP) ||
-      (m_opcode == LOAD_RAY_WORLD_ORIGIN_OP) || (m_opcode == LOAD_RAY_T_MAX_OP) ||
-      (m_opcode == TXL_OP) || (m_opcode == SHADER_CLOCK_OP) || (m_opcode == IMG_DEREF_LD_OP) ||
-      (m_opcode == RUN_INTERSECTION_OP) || (m_opcode == GET_INTERSECTION_INDEX_OP) ||
-      (m_opcode == RUN_ANYHIT_OP) || (m_opcode == GET_ANYHIT_INDEX_OP) ||
-      (m_opcode == CALL_INTERSECTION_SHADER_OP) || (m_opcode == INTERSECTION_EXIT_OP) || 
-      (m_opcode == CALL_ANYHIT_SHADER_OP) || (m_opcode == ANYHIT_EXIT_OP) || 
-      (m_opcode == REPORT_RAY_INTERSECTION_OP) || (m_opcode == IGNORE_RAY_INTERSECTION_OP) || (m_opcode == LOAD_RAY_T_MIN_OP) || 
-      (m_opcode == HIT_GEOMETRY_OP) || (m_opcode == COPYSIGNF_OP) || (m_opcode == GET_HITGROUP_OP) || 
-      (m_opcode == GET_WARP_HITGROUP_OP) || (m_opcode == GET_CLOSEST_HIT_SHADERID_OP) ||
-      (m_opcode == GET_INTERSECTION_SHADERID_OP) || (m_opcode == GET_INTERSECTION_SHADER_DATA_ADDRESS_OP) ||
-      (m_opcode == GET_ANYHIT_SHADERID_OP) || (m_opcode == GET_ANYHIT_SHADER_DATA_ADDRESS_OP)) {
+      (m_opcode == DEREF_VAR_OP) || (m_opcode == WRAP_32_4_OP) ||
+      (m_opcode == UNWRAP_32_4_OP) || (m_opcode == GET_ELEMENT_32_OP) ||
+      (m_opcode == SET_ELEMENT_32_OP) ||
+      (m_opcode == LOAD_RAY_WORLD_TO_OBJECT_OP) ||
+      (m_opcode == LOAD_RAY_OBJECT_TO_WORLD_OP) ||
+      (m_opcode == LOAD_FIRST_VERTEX_OP) ||
+      (m_opcode == LOAD_VERTEX_ID_ZERO_BASE_OP) ||
+      (m_opcode == LOAD_BASE_INSTANCE_OP) ||
+      (m_opcode == LOAD_INSTANCE_ID_OP) ||
+      (m_opcode == LOAD_PUSH_CONSTANT_OP) || (m_opcode == DISCARD_IF_OP) ||
+      (m_opcode == LOAD_RAY_WORLD_DIRECTION_OP) ||
+      (m_opcode == LOAD_PRIMITIVE_ID_OP) ||
+      (m_opcode == LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) ||
+      (m_opcode == END_TRACE_RAY_OP) ||
+      (m_opcode == LOAD_RAY_WORLD_ORIGIN_OP) ||
+      (m_opcode == LOAD_RAY_T_MAX_OP) || (m_opcode == TXL_OP) ||
+      (m_opcode == SHADER_CLOCK_OP) || (m_opcode == IMG_DEREF_LD_OP) ||
+      (m_opcode == RUN_INTERSECTION_OP) ||
+      (m_opcode == GET_INTERSECTION_INDEX_OP) || (m_opcode == RUN_ANYHIT_OP) ||
+      (m_opcode == GET_ANYHIT_INDEX_OP) ||
+      (m_opcode == CALL_INTERSECTION_SHADER_OP) ||
+      (m_opcode == INTERSECTION_EXIT_OP) ||
+      (m_opcode == CALL_ANYHIT_SHADER_OP) || (m_opcode == ANYHIT_EXIT_OP) ||
+      (m_opcode == REPORT_RAY_INTERSECTION_OP) ||
+      (m_opcode == IGNORE_RAY_INTERSECTION_OP) ||
+      (m_opcode == LOAD_RAY_T_MIN_OP) || (m_opcode == HIT_GEOMETRY_OP) ||
+      (m_opcode == COPYSIGNF_OP) || (m_opcode == GET_HITGROUP_OP) ||
+      (m_opcode == GET_WARP_HITGROUP_OP) ||
+      (m_opcode == GET_CLOSEST_HIT_SHADERID_OP) ||
+      (m_opcode == GET_INTERSECTION_SHADERID_OP) ||
+      (m_opcode == GET_INTERSECTION_SHADER_DATA_ADDRESS_OP) ||
+      (m_opcode == GET_ANYHIT_SHADERID_OP) ||
+      (m_opcode == GET_ANYHIT_SHADER_DATA_ADDRESS_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -635,7 +654,10 @@ void ptx_instruction::set_mul_div_or_other_archop() {
       (m_opcode != HIT_GEOMETRY_OP) && (m_opcode != COPYSIGNF_OP) && (m_opcode != GET_HITGROUP_OP) &&
       (m_opcode != GET_WARP_HITGROUP_OP) && (m_opcode != GET_CLOSEST_HIT_SHADERID_OP) &&
       (m_opcode != GET_INTERSECTION_SHADERID_OP) && (m_opcode != GET_INTERSECTION_SHADER_DATA_ADDRESS_OP) &&
-      (m_opcode != GET_ANYHIT_SHADERID_OP) && (m_opcode != GET_ANYHIT_SHADER_DATA_ADDRESS_OP)) {
+      (m_opcode != GET_ANYHIT_SHADERID_OP) && (m_opcode != GET_ANYHIT_SHADER_DATA_ADDRESS_OP) && (m_opcode != LOAD_FIRST_VERTEX_OP) && (m_opcode != LOAD_PUSH_CONSTANT_OP) &&
+      (m_opcode != LOAD_VERTEX_ID_ZERO_BASE_OP) && 
+      (m_opcode != LOAD_BASE_INSTANCE_OP) && 
+      (m_opcode != LOAD_INSTANCE_ID_OP)) {
     if (get_type() == F32_TYPE || get_type() == F64_TYPE ||
         get_type() == FF64_TYPE) {
       switch (get_opcode()) {

@@ -67,7 +67,7 @@ VULKAN_PATHS += -I$(MESA_PATH)/build/src/intel/vulkan/
 VULKAN_PATHS += -I$(MESA_PATH)/build/src/intel/vulkan/
 VULKAN_PATHS += -I$(MESA_PATH)/src/vulkan/wsi/
 
-LLVM_PATH = -I/usr/lib/llvm-10/include
+LLVM_PATH = -I/usr/lib/llvm-14/include
 
 LIB_Vulkan_Intel_DIR = $(MESA_PATH)/build/install/lib/x86_64-linux-gnu/
 
@@ -81,8 +81,7 @@ OPT += -fPIC
 # Temporary hardcode value
 OPT += -DMESA_USE_LVPIPE_DRIVER
 ifeq ($(DEBUG),1)
-	OPT += -DVSIM_DEBUG_PRINT=0
-	# OPT += -DVSIM_DEBUG_PRINT=1
+	OPT += -DVSIM_DEBUG_PRINT=1
 else
 	OPT += -DVSIM_DEBUG_PRINT=0
 endif
@@ -167,9 +166,9 @@ $(OUTPUT_DIR)/instructions.h: instructions.cc
 
 $(OUTPUT_DIR)/ptx_parser_decode.def: $(OUTPUT_DIR)/ptx.tab.c
 ifeq ($(shell uname),Linux)
-	cat $(OUTPUT_DIR)/ptx.tab.h | grep "=" | sed 's/^[ ]\+//' | sed 's/[=,]//g' | sed 's/\([_A-Z1-9]\+\)[ ]\+\([0-9]\+\)/\1 \1/' | sed 's/^/DEF(/' | sed 's/ /,"/' | sed 's/$$/")/' > $(OUTPUT_DIR)/ptx_parser_decode.def
+		cat $(OUTPUT_DIR)/ptx.tab.h | grep "=" | sed 's/^[ ]\+//' | sed -E 's/\s+\/\*.+\*\///' | sed 's/[=,]//g' | sed 's/\([_A-Z1-9]\+\)[ ]\+\([0-9]\+\)/\1 \1/' | sed 's/^/DEF(/' | sed 's/ /,"/' | sed 's/$$/")/' | sed '/YYerror/d;/YYEOF/d;/YYEMPTY/d;/YYUNDEF/d;'> $(OUTPUT_DIR)/ptx_parser_decode.def
 else
-	cat $(OUTPUT_DIR)/ptx.tab.h | grep "=" | sed -E 's/^ +//' | sed 's/[=,]//g' | sed -E 's/([_A-Z1-9]+).*/\1 \1/' | sed 's/^/DEF(/' | sed 's/ /,"/' | sed 's/$$/")/' > $(OUTPUT_DIR)/ptx_parser_decode.def
+		cat $(OUTPUT_DIR)/ptx.tab.h | grep "=" | sed -E 's/^ +//' | sed -E 's/\s+\/\*.+\*\///' | sed 's/[=,]//g' | sed -E 's/([_A-Z1-9]+).*/\1 \1/' | sed 's/^/DEF(/' | sed 's/ /,"/' | sed 's/$$/")/' | sed '/YYerror/d;/YYEOF/d;/YYEMPTY/d;/YYUNDEF/d;' > $(OUTPUT_DIR)/ptx_parser_decode.def
 endif
 
 $(OUTPUT_DIR)/instructions.o: $(OUTPUT_DIR)/instructions.h $(OUTPUT_DIR)/ptx.tab.c
