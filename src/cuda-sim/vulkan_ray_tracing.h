@@ -29,6 +29,8 @@
 #ifndef VULKAN_RAY_TRACING_H
 #define VULKAN_RAY_TRACING_H
 
+#define MESA_USE_LVPIPE_DRIVER 1
+
 #include "vulkan/vulkan.h"
 #if defined(MESA_USE_INTEL_DRIVER)
 #include "vulkan/vulkan_intel.h"

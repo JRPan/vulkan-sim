@@ -1347,7 +1347,7 @@ void ptx_instruction::set_input_output_registers() {
     case LOAD_RAY_T_MIN_OP:
       operand_classification = {2};
       break;
-    // case LD_VK_DESC_OP:
+    case LD_VK_DESC_OP:
     case RT_ALLOC_MEM_OP:
     case GET_ELEMENT_32_OP:
     case SET_ELEMENT_32_OP:
@@ -1394,6 +1394,11 @@ void ptx_instruction::set_input_output_registers() {
         printf("Unexpected number of operands on line %d. Expected 13/16, received %d\n", m_source_line, num_operands);
         abort();
       }
+      break;
+    case LOAD_UBO_OP:
+      // load_ubo %dst0, %dst1, %dst2, %dst3, %src_index, %src_offset, imm, imm, imm, imm, imm;
+      // 4 outputs, 2 inputs, 5 immediates = 11 operands
+      operand_classification = {2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1};
       break;
     case HIT_GEOMETRY_OP:
       operand_classification = {2, 1};

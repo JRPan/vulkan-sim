@@ -1239,17 +1239,14 @@ std::string base_name(std::string & path)
 
 void VulkanRayTracing::setDescriptorSet(unsigned index, struct DESCRIPTOR_SET_STRUCT *set)
 {
-    if (VulkanRayTracing::descriptorSet[index] == NULL) {
-        printf("gpgpusim: set descriptor set 0x%x\n", set);
+    // CRITICAL FIX: Allow descriptor set updates instead of ignoring them
+    // The instancing sample (and other samples) may update descriptors between draw calls
+    if (VulkanRayTracing::descriptorSet[index] != set) {
+        printf("gpgpusim: updating descriptor set[%u]: %p -> %p\n",
+               index, VulkanRayTracing::descriptorSet[index], set);
         VulkanRayTracing::descriptorSet[index] = set;
-    }
-    // TODO: Figure out why it sets the descriptor set twice
-    else {
-        printf("gpgpusim: descriptor set already set; ignoring update.\n");
-        if (use_CRISP) {
-            VulkanRayTracing::descriptorSet[index] = set;
-            assert(0);
-        }
+    } else {
+        printf("gpgpusim: descriptor set[%u] unchanged (already %p)\n", index, set);
     }
 }
 
@@ -1948,12 +1945,41 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
         // return descriptors[setID][binding].address;
     }
 #elif defined(MESA_USE_LVPIPE_DRIVER)
-    VSIM_DPRINTF("gpgpusim: getDescriptorAddress for binding %d\n", binding);
+    VSIM_DPRINTF("gpgpusim: getDescriptorAddress for setID=%d, binding=%d\n", setID, binding);
+
+    // Validate descriptor set pointer
     struct lvp_descriptor_set* set = VulkanRayTracing::descriptorSet[setID];
+    if (set == NULL) {
+        printf("ERROR: Descriptor set[%d] is NULL!\n", setID);
+        abort();
+    }
+
+    // Validate layout
+    if (set->layout == NULL || set->layout->binding == NULL) {
+        printf("ERROR: Descriptor set[%d] layout or binding array is NULL!\n", setID);
+        abort();
+    }
+
+    // Check binding index against layout binding count
+    if (binding >= set->layout->binding_count) {
+        printf("ERROR: Binding %d out of range (binding_count=%u)\n",
+               binding, set->layout->binding_count);
+        abort();
+    }
+
     const struct lvp_descriptor_set_binding_layout *bind_layout = &set->layout->binding[binding];
+    VSIM_DPRINTF("gpgpusim: bind_layout descriptor_index=%u\n", bind_layout->descriptor_index);
+
+    // Validate descriptor index against layout size (total descriptor count)
+    if (bind_layout->descriptor_index >= set->layout->size) {
+        printf("ERROR: descriptor_index %u out of range (layout size=%u)\n",
+               bind_layout->descriptor_index, set->layout->size);
+        abort();
+    }
+
     struct lvp_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
 
-    // printf("DESCRIPTOR TYPE: %d\n", desc->type);
+    VSIM_DPRINTF("gpgpusim: descriptor type=%d\n", desc->type);
     switch (desc->type) {
         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
             VSIM_DPRINTF("gpgpusim: storage image; descriptor address %p\n", desc);
@@ -1961,14 +1987,23 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
             break;
         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
             VSIM_DPRINTF("gpgpusim: uniform buffer; buffer mem address %p\n", (void *) desc->info.ubo.pmem);
+            if (desc->info.ubo.pmem == NULL) {
+                printf("WARNING: Uniform buffer pmem is NULL for setID=%d, binding=%d\n", setID, binding);
+            }
             return (void *) desc->info.ubo.pmem;
             break;
         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
             VSIM_DPRINTF("gpgpusim: storage buffer; buffer mem address %p\n", (void *) desc->info.ssbo.pmem);
+            if (desc->info.ssbo.pmem == NULL) {
+                printf("WARNING: Storage buffer pmem is NULL for setID=%d, binding=%d\n", setID, binding);
+            }
             return (void *) desc->info.ssbo.pmem;
             break;
         case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
             VSIM_DPRINTF("gpgpusim: accel struct; root address %p\n", (void *)desc->info.ubo.pmem + desc->info.ubo.buffer_offset);
+            if (desc->info.ubo.pmem == NULL) {
+                printf("WARNING: Acceleration structure pmem is NULL for setID=%d, binding=%d\n", setID, binding);
+            }
             return (void *)desc->info.ubo.pmem + desc->info.ubo.buffer_offset;
             break;
         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
@@ -1977,7 +2012,8 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
             return (void *) desc;
             break;
         default:
-            VSIM_DPRINTF("gpgpusim: unimplemented descriptor type\n");
+            printf("ERROR: Unimplemented descriptor type %d for setID=%d, binding=%d\n",
+                   desc->type, setID, binding);
             abort();
     }
 #endif
@@ -2747,8 +2783,71 @@ void VulkanRayTracing::dump_descriptor_sets(struct DESCRIPTOR_SET_STRUCT *set)
         }
    }
 #elif defined(MESA_USE_LVPIPE_DRIVER)
-    printf("gpgpusim: dump_descriptor_sets not implemented for lavapipe.\n");
-    abort();
+    printf("=== Descriptor Set Dump (Lavapipe) ===\n");
+    printf("Set address: %p\n", set);
+    if (set == NULL) {
+        printf("ERROR: Descriptor set is NULL\n");
+        printf("=================================\n");
+        return;
+    }
+
+    printf("Binding count: %u, Layout size: %u\n", set->layout->binding_count, set->layout->size);
+    printf("Layout address: %p\n", set->layout);
+
+    for(int i = 0; i < set->layout->binding_count; i++) {
+        const struct lvp_descriptor_set_binding_layout *bind_layout = &set->layout->binding[i];
+
+        if (bind_layout->descriptor_index >= set->layout->size) {
+            printf("  Binding %d: ERROR - descriptor_index %u out of range (size=%u)\n",
+                   i, bind_layout->descriptor_index, set->layout->size);
+            continue;
+        }
+
+        struct lvp_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
+
+        printf("  Binding %d (descriptor_index=%u):\n", i, bind_layout->descriptor_index);
+        printf("    Type: %d ", desc->type);
+
+        switch (desc->type) {
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                printf("(STORAGE_BUFFER)\n");
+                printf("    Storage buffer pmem: %p\n", desc->info.ssbo.pmem);
+                break;
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                printf("(UNIFORM_BUFFER)\n");
+                printf("    Uniform buffer pmem: %p, offset: %u\n",
+                       desc->info.ubo.pmem, desc->info.ubo.buffer_offset);
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                printf("(STORAGE_IMAGE)\n");
+                printf("    Image pointer: %p\n", desc->info.image_view.image);
+                break;
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                printf("(COMBINED_IMAGE_SAMPLER)\n");
+                if (desc->info.sampler_view != NULL && desc->info.sampler_view->image != NULL) {
+                    printf("    Image pmem: %p\n", desc->info.sampler_view->image->pmem);
+                    printf("    Image dimensions: %u x %u\n",
+                           desc->info.sampler_view->image->vk.extent.width,
+                           desc->info.sampler_view->image->vk.extent.height);
+                } else {
+                    printf("    Sampler view or image is NULL\n");
+                }
+                break;
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+                printf("(SAMPLER)\n");
+                break;
+            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+                printf("(ACCELERATION_STRUCTURE_KHR)\n");
+                printf("    Accel structure: %p + offset %u = %p\n",
+                       desc->info.ubo.pmem, desc->info.ubo.buffer_offset,
+                       (void*)((uint8_t*)desc->info.ubo.pmem + desc->info.ubo.buffer_offset));
+                break;
+            default:
+                printf("(UNKNOWN TYPE %d)\n", desc->type);
+                break;
+        }
+    }
+    printf("=================================\n");
 
 #endif
 }
