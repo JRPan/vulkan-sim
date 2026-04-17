@@ -6158,7 +6158,10 @@ void tex_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t offset_reg;
 
   std::vector<ImageMemoryTransactionRecord> transactions;
-  void *desc = (uint64_t)(VulkanRayTracing::getDescriptorAddress(src0_data.u32, src1_data.u32));
+  // src0_data = texture index (lavapipe sampler_view_index), src1_data = sampler index
+  // Use sampler_view_index lookup instead of getDescriptorAddress (which expects set/binding)
+  // Stage 4 = MESA_SHADER_FRAGMENT
+  void *desc = VulkanRayTracing::getDescriptorBySamplerViewIndex(0, src0_data.u32, 4);
   unsigned lod = 0;
   unsigned thread_id = thread->get_thread_id();
   if (VulkanRayTracing::use_CRISP) {
@@ -7556,12 +7559,15 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     index = src3_data.u32;
     if (type == nir_var_shader_in || type == nir_var_shader_out) {
       if (size == 64) {
-        size = 16;  // I dont know
+        size = 16;  // vec4: 4 * 4 bytes
       } else if (size == 36) {
-        size = 12;  // I dont know
+        size = 12;  // vec3: 3 * 4 bytes
       } else if (size == 16) {
-        size = 8;   // I dont know
+        size = 8;   // vec2: 2 * 4 bytes
+      } else if (size == 4) {
+        size = 4;   // scalar: 1 * 4 bytes
       } else {
+        printf("ERROR: Unexpected shader_in/shader_out size %u for CRISP\n", size);
         assert(0);
       }
     }
@@ -8010,47 +8016,34 @@ void copysignf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void load_ubo_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // load_ubo %ssa_8_0, %ssa_8_1, %ssa_8_2, %ssa_8_3, %ssa_7, %ssa_6, 0, 4, 0, 0, 0;
-  assert(pI->get_num_operands() == 11);
-  ptx_reg_t src0_data, src1_data, src2_data, src3_data, src4_data, src5_data;
-  
-  const operand_info &src0 = pI->operand_lookup(0);
+  // Variable operand count: scalar=8, vec2=9, vec3=10, vec4=11
+  // Layout: dst0 [dst1] [dst2] [dst3], src_index, src_offset, imm, imm, imm, imm, imm
+  unsigned num_ops = pI->get_num_operands();
+  assert(num_ops >= 8 && num_ops <= 11);
+  unsigned num_components = num_ops - 7; // 1 to 4
 
-  const operand_info &src1 = pI->operand_lookup(1);
+  // src_index and src_offset are after the dst operands
+  const operand_info &src_index_op = pI->operand_lookup(num_components);
+  ptx_reg_t src_index_data = thread->get_operand_value(src_index_op, src_index_op, U32_TYPE, thread, 1);
+  unsigned index = src_index_data.u32;
 
-  const operand_info &src2 = pI->operand_lookup(2);
+  const operand_info &src_offset_op = pI->operand_lookup(num_components + 1);
+  ptx_reg_t src_offset_data = thread->get_operand_value(src_offset_op, src_offset_op, U32_TYPE, thread, 1);
+  unsigned byte_offset = src_offset_data.u32;
 
-  const operand_info &src3 = pI->operand_lookup(3);
-
-  const operand_info &src4 = pI->operand_lookup(4);
-  src4_data = thread->get_operand_value(src4, src4, U32_TYPE, thread, 1);
-  unsigned index = (src4_data.u32);
-
+  addr_t addr = VulkanRayTracing::getUBOAddr(index, byte_offset);
   memory_space *mem = thread->get_global_memory();
 
-  const operand_info &src5 = pI->operand_lookup(5);
-  src5_data = thread->get_operand_value(src5, src5, U32_TYPE, thread, 1);
-  unsigned byte_offset = src5_data.u32;
-  addr_t addr = VulkanRayTracing::getUBOAddr(index, byte_offset);
-
-  mem->read(addr, 4, &src0_data.f32);
-  thread->set_operand_value(src0, src0_data, F32_TYPE, thread, pI);
-  mem->read(addr + 4, 4, &src1_data.f32);
-  thread->set_operand_value(src1, src1_data, F32_TYPE, thread, pI);
-  mem->read(addr + 8, 4, &src2_data.f32);
-  thread->set_operand_value(src2, src2_data, F32_TYPE, thread, pI);
-  mem->read(addr + 12, 4, &src3_data.f32);
-  thread->set_operand_value(src3, src3_data, F32_TYPE, thread, pI);
+  for (unsigned i = 0; i < num_components; i++) {
+    const operand_info &dst = pI->operand_lookup(i);
+    ptx_reg_t data;
+    mem->read(addr + i * 4, 4, &data.f32);
+    thread->set_operand_value(dst, data, F32_TYPE, thread, pI);
+  }
 
   memory_space_t space = pI->get_space();
-
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
-
-  unsigned thread_id = thread->get_thread_id();
-  // if(thread_id == 0) {
-  //   printf("ubo: thread_id %u, index %u, byte_offset %u, addr %llu, data %f %f %f %f\n", thread_id, index, byte_offset, addr, src0_data.f32, src1_data.f32, src2_data.f32, src3_data.f32);
-  // }
 }
 
 void load_push_constant_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

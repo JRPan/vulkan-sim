@@ -2019,8 +2019,36 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
 #endif
 }
 
-void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc, 
-                                    float x, float y, float lod, 
+void* VulkanRayTracing::getDescriptorBySamplerViewIndex(uint32_t setID, uint32_t sampler_view_index, uint32_t stage)
+{
+#if defined(MESA_USE_LVPIPE_DRIVER)
+    struct lvp_descriptor_set* set = VulkanRayTracing::descriptorSet[setID];
+    if (set == NULL) {
+        printf("ERROR: Descriptor set[%d] is NULL in getDescriptorBySamplerViewIndex!\n", setID);
+        abort();
+    }
+
+    // Search bindings for one with matching sampler_view_index at the given stage
+    for (unsigned i = 0; i < set->layout->binding_count; i++) {
+        const struct lvp_descriptor_set_binding_layout *bind_layout = &set->layout->binding[i];
+        if (bind_layout->stage[stage].sampler_view_index == (int16_t)sampler_view_index) {
+            struct lvp_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
+            VSIM_DPRINTF("gpgpusim: found sampler_view_index %u at binding %u, descriptor type %d\n",
+                         sampler_view_index, i, desc->type);
+            return (void *) desc;
+        }
+    }
+
+    printf("ERROR: Could not find sampler_view_index %u in descriptor set[%d] (stage %u)\n",
+           sampler_view_index, setID, stage);
+    abort();
+#else
+    return getDescriptorAddress(setID, sampler_view_index);
+#endif
+}
+
+void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
+                                    float x, float y, float lod,
                                     float &c0, float &c1, float &c2, float &c3, 
                                     std::vector<ImageMemoryTransactionRecord>& transactions,
                                     uint64_t launcher_offset)
@@ -3115,7 +3143,7 @@ void* VulkanRayTracing::allocBuffer(void* bufferAddr, uint64_t bufferSize)
 }
 
 bool SKIP_VS = false;
-bool SKIP_FS = true;
+bool SKIP_FS = false;
 
 unsigned tile_size = 8;
 
@@ -3126,13 +3154,29 @@ void VulkanRayTracing::vkCmdDraw() {
   gpgpu_sim *m_gpu = context->get_device()->get_gpgpu();
   FILE *fp;
 
-  if (draw == 24) {
+  // Check draw limit from environment variable
+  char *max_draws_str = getenv("GPGPUSIM_MAX_DRAWS");
+  if (max_draws_str && draw >= (unsigned)atoi(max_draws_str)) {
+    printf("gpgpusim: reached GPGPUSIM_MAX_DRAWS=%s, exiting after %u draws.\n", max_draws_str, draw);
     exit(0);
   }
 
-  if (draw < 1) {
-    cleanup();
-    return;
+  if (VertexMeta->index_size == 0 || VertexMeta->index_buffer == NULL) {
+    // Non-indexed draw (vkCmdDraw): generate sequential indices
+    unsigned vertex_count = VertexMeta->index_buf_size; // vertex count passed from Mesa
+    printf("gpgpusim: non-indexed draw %u: %u vertices starting at %u\n",
+           draw, vertex_count, VertexMeta->StartVertexLocation);
+    unsigned padded_count = ((vertex_count + 2) / 3) * 3;
+    u_int32_t *synthetic_indices = new u_int32_t[padded_count];
+    for (unsigned i = 0; i < vertex_count; i++) {
+      synthetic_indices[i] = VertexMeta->StartVertexLocation + i;
+    }
+    for (unsigned i = vertex_count; i < padded_count; i++) {
+      synthetic_indices[i] = synthetic_indices[vertex_count - 1];
+    }
+    VertexMeta->index_buffer = synthetic_indices;
+    VertexMeta->index_size = sizeof(u_int32_t);
+    VertexMeta->index_buf_size = padded_count * sizeof(u_int32_t);
   }
 
   // create fbo
@@ -3178,21 +3222,43 @@ void VulkanRayTracing::vkCmdDraw() {
   assert(FBO->fbo_dev);
   VertexMeta->target_sm.resize(16);
 
-  if (VertexMeta->index_size == sizeof(u_int16_t)) {
+  if (VertexMeta->index_size == 0 || VertexMeta->index_buffer == NULL) {
+    // Non-indexed draw (vkCmdDraw): generate sequential vertex indices
+    // index_buf_size was repurposed to store vertex count from Mesa
+    unsigned vertex_count = VertexMeta->index_buf_size;
+    printf("gpgpusim: non-indexed draw %u, generating sequential indices for %u vertices (start=%u)\n",
+           draw, vertex_count, VertexMeta->StartVertexLocation);
+    if (vertex_count == 0) {
+      printf("gpgpusim: WARNING: no vertex count for non-indexed draw, skipping\n");
+      cleanup();
+      return;
+    }
+    // Pad to multiple of 3 for triangle assembly
+    unsigned padded_count = ((vertex_count + 2) / 3) * 3;
+    u_int32_t *synthetic_indices = new u_int32_t[padded_count];
+    for (unsigned i = 0; i < vertex_count; i++) {
+      synthetic_indices[i] = VertexMeta->StartVertexLocation + i;
+    }
+    for (unsigned i = vertex_count; i < padded_count; i++) {
+      synthetic_indices[i] = synthetic_indices[vertex_count - 1]; // degenerate
+    }
+    VertexMeta->index_buffer = synthetic_indices;
+    VertexMeta->index_size = sizeof(u_int32_t);
+    VertexMeta->index_buf_size = padded_count * sizeof(u_int32_t);
+  } else if (VertexMeta->index_size == sizeof(u_int16_t)) {
     if (((u_int16_t*) VertexMeta->index_buffer)[0] == ((u_int16_t*) VertexMeta->index_buffer)[1] &&
-        ((u_int16_t*) VertexMeta->index_buffer)[1] == ((u_int16_t*) VertexMeta->index_buffer)[2] && 
+        ((u_int16_t*) VertexMeta->index_buffer)[1] == ((u_int16_t*) VertexMeta->index_buffer)[2] &&
         ((u_int16_t*) VertexMeta->index_buffer)[0] == 0) {
       assert(0 && "empty index buffer");
     }
   } else if (VertexMeta->index_size == sizeof(u_int32_t)) {
     if (((u_int32_t*) VertexMeta->index_buffer)[0] == ((u_int32_t*) VertexMeta->index_buffer)[1] &&
-        ((u_int32_t*) VertexMeta->index_buffer)[1] == ((u_int32_t*) VertexMeta->index_buffer)[2] && 
+        ((u_int32_t*) VertexMeta->index_buffer)[1] == ((u_int32_t*) VertexMeta->index_buffer)[2] &&
         ((u_int32_t*) VertexMeta->index_buffer)[0] == 0) {
       assert(0 && "empty index buffer");
     }
   } else {
-    // add your type
-    printf("unsupported index type\n");
+    printf("unsupported index type %u\n", VertexMeta->index_size);
     assert(0 && "unsupported index type");
   }
   batch_vertex();
@@ -3233,7 +3299,13 @@ void VulkanRayTracing::vkCmdDraw() {
   printf("total pixel count: %u\n", (unsigned)VertexMeta->thread_info_pixel.size());
   thread_count = VertexMeta->thread_info_pixel.size();
   is_FS = true;
-  run_shader(draw * 2 + 1, thread_count);
+  if (thread_count == 0) {
+    printf("gpgpusim: no fragments generated, skipping FS for draw %u\n", draw);
+  } else if (!SKIP_FS) {
+    run_shader(draw * 2 + 1, thread_count);
+  } else {
+    printf("gpgpusim: SKIP_FS is set, skipping fragment shader\n");
+  }
 
   dumpFBO();
   cleanup();
@@ -3265,14 +3337,17 @@ uint64_t VulkanRayTracing::getVertexAddr(uint32_t buffer_index,
   }
   unsigned offset = 0;
   assert (VertexMeta->vb[index] != (unsigned)-1);
-  if (VertexMeta->VertexAttrib->rate[binding] == VK_VERTEX_INPUT_RATE_VERTEX) {
+  if (VertexMeta->VertexAttrib->rate[loc] == 0) {
+    // Per-vertex attribute (instance_divisor == 0)
     offset = VertexMeta->vb[index] * VertexMeta->vertex_stride[binding] / 4;
     assert(offset < VertexMeta->vertex_count[binding] * VertexMeta->InstanceCount);
-  } else if (VertexMeta->VertexAttrib->rate[binding] == VK_VERTEX_INPUT_RATE_INSTANCE) {
+  } else {
+    // Per-instance attribute (instance_divisor != 0)
     offset = instance * VertexMeta->vertex_stride[binding] / 4;
-    assert(offset < VertexMeta->vertex_count[binding]);
   }
-  return VertexMeta->vertex_addr[binding] + offset + attrib_stride / 4;
+  uint64_t result = (uint64_t)(VertexMeta->vertex_addr[binding] + offset + attrib_stride / 4);
+
+  return result;
 }
 
 uint64_t VulkanRayTracing::getVertexOutAddr(std::string index,
@@ -3366,17 +3441,17 @@ void VulkanRayTracing::bindVertex(unsigned index, float *addr, unsigned size, un
   VertexMeta->vertex_stride[index] = stride;
   VertexMeta->vertex_size[index] = size;
 
-  u_int32_t *devPtr;
+  // Host-passthrough: register host pointer as identity mapping in the vulkan
+  // address map so find_vulkan_buffer() resolves it. Align down to 16-byte
+  // boundary since the map uses 16-byte block keys.
   gpgpu_context *ctx = GPGPU_Context();
   CUctx_st *context = GPGPUSim_Context(ctx);
-  gpgpu_sim *m_gpu = context->get_device()->get_gpgpu();
-  devPtr = allocBuffer(addr, size);
+  memory_space *mem = context->get_device()->get_gpgpu()->get_global_memory();
+  uintptr_t aligned_addr = (uintptr_t)addr & ~(uintptr_t)0xF;
+  unsigned align_adjust = (uintptr_t)addr - aligned_addr;
+  mem->bind_vulkan_buffer((void*)aligned_addr, size + align_adjust, (void*)aligned_addr);
 
-  // m_gpu->valid_addr_start["vb" + std::to_string(index)] = (uint64_t)devPtr;
-  // m_gpu->valid_addr_end["vb" + std::to_string(index)] =
-  //     ((uint64_t)devPtr) + size;
-  // m_gpu->memcpy_to_gpu(devPtr, addr, size);
-  VertexMeta->vertex_addr[index] = devPtr;
+  VertexMeta->vertex_addr[index] = (u_int32_t *)addr;
 }
 
 void VulkanRayTracing::saveIndexBuffer(void *ptr, unsigned index_size, unsigned buf_size) {
@@ -3400,6 +3475,12 @@ void VulkanRayTracing::saveVertexInfo(unsigned location, unsigned binding, unsig
 
 void VulkanRayTracing::saveInstance(unsigned instanceCount, unsigned startInstance) {
   assert(VertexMeta);
+  char *max_inst = getenv("GPGPUSIM_MAX_INSTANCES");
+  if (max_inst && instanceCount > (unsigned)atoi(max_inst)) {
+    unsigned cap = (unsigned)atoi(max_inst);
+    printf("gpgpusim: capping instanceCount from %u to %u\n", instanceCount, cap);
+    instanceCount = cap;
+  }
   VertexMeta->InstanceCount = instanceCount;
   VertexMeta->StartInstanceLocation = startInstance;
 }
@@ -3605,7 +3686,7 @@ void VulkanRayTracing::post_vertex() {
         unsigned clipped = 0;
         for (unsigned j = 0; j < 3; j++) {
           unsigned index = batch_prim[i + j];
-          unsigned tid = idx_to_tid.at(index);
+          unsigned tid = idx_to_tid.at(index) + instance * VertexMeta->vb.size();
           // printf("index: %u, [%f, %f, %f, %f] - %f\n", index,
           //        VertexMeta->vertex_raw[tid][0], VertexMeta->vertex_raw[tid][1],
           //        VertexMeta->vertex_raw[tid][2], VertexMeta->vertex_raw[tid][3], VertexMeta->vertex_screen[tid][2]);
@@ -3926,6 +4007,14 @@ void VulkanRayTracing::pre_frag() {
     std::string index = attrib.first;
 
     unsigned stride = VertexMeta->vertex_out_stride.at(index);
+
+    if (VertexMeta->attribs.find(index) == VertexMeta->attribs.end() ||
+        VertexMeta->attribs.at(index).empty()) {
+      printf("gpgpusim: pre_frag: no fragments for attribute '%s', skipping\n", index.c_str());
+      VertexMeta->vertex_out_count[index] = 0;
+      VertexMeta->vertex_out_size[index] = 0;
+      continue;
+    }
 
     VertexMeta->vertex_out_count[index] =
         VertexMeta->attribs.at(index).size() *

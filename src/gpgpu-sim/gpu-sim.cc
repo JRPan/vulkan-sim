@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <execinfo.h>
 #include "zlib.h"
 
 #include "dram.h"
@@ -883,8 +884,32 @@ void exec_gpgpu_sim::createSIMTCluster() {
                                    m_shader_stats, m_memory_stats);
 }
 
+// Crash handler for debugging - prints backtrace on SIGSEGV/SIGABRT
+static void crash_handler(int sig) {
+  void *array[50];
+  int size = backtrace(array, 50);
+  const char *sig_name = (sig == SIGSEGV)   ? "SIGSEGV"
+                         : (sig == SIGABRT) ? "SIGABRT"
+                                            : "UNKNOWN";
+  fprintf(stderr, "\n=== CRASH: %s (signal %d) ===\n", sig_name, sig);
+  fprintf(stderr, "Backtrace:\n");
+  backtrace_symbols_fd(array, size, STDERR_FILENO);
+  fprintf(stderr, "=== END BACKTRACE ===\n");
+  _exit(1);
+}
+
+static void install_crash_handlers() {
+  static bool installed = false;
+  if (!installed) {
+    signal(SIGSEGV, crash_handler);
+    signal(SIGABRT, crash_handler);
+    installed = true;
+  }
+}
+
 gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     : gpgpu_t(config, ctx), m_config(config) {
+  install_crash_handlers();
   gpgpu_ctx = ctx;
   m_shader_config = &m_config.m_shader_config;
   m_memory_config = &m_config.m_memory_config;

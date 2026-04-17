@@ -60,8 +60,8 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
                                      class ptx_thread_info *thd,
                                      const ptx_instruction *pI) {
   if(!use_external_launcher) {
-    if (VulkanRayTracing::use_CRISP && addr == 0) {
-      return; //extra threads
+    if (VulkanRayTracing::use_CRISP && addr < 0x1000) {
+      return; //extra threads or out-of-range vertex reads (addr near zero)
     }
     void* vulkan_addr = find_vulkan_buffer(addr);
 
@@ -69,9 +69,8 @@ void memory_space_impl<BSIZE>::write(mem_addr_t addr, size_t length,
       memcpy(vulkan_addr, data, length);
     }
     else {
+      printf("gpgpusim: ERROR: Memory write failed for address 0x%llx\n", (unsigned long long)addr);
       assert(0);
-      printf("gpgpusim: WARNING: Memory backing buffer not found for address %p. This data write may be invalid\n", addr);
-      memcpy(addr, data, length);
     }
   }
   else {
@@ -158,7 +157,6 @@ void* memory_space_impl<BSIZE>::find_vulkan_buffer(mem_addr_t addr) const {
     return (void*)((unsigned long long)vulkan_addr + offset);
   }
   else {
-    printf("Could not find %p in Vulkan address map\n", (void*)index);
     return NULL;
   }
 }
@@ -167,8 +165,8 @@ template <unsigned BSIZE>
 void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
                                     void *data) const {
   if(!use_external_launcher) {
-    if (VulkanRayTracing::use_CRISP && addr == 0) {
-      return; //extra threads
+    if (VulkanRayTracing::use_CRISP && addr < 0x1000) {
+      return; //extra threads or out-of-range vertex reads (addr near zero)
     }
     void* vulkan_addr = find_vulkan_buffer(addr);
 
@@ -176,9 +174,8 @@ void memory_space_impl<BSIZE>::read(mem_addr_t addr, size_t length,
       memcpy(data, vulkan_addr, length);
     }
     else {
-      assert(0);
-      printf("gpgpusim: WARNING: Memory backing buffer not found for address %p. This data read may be invalid\n", addr);
-      memcpy(data, addr, length);
+      fprintf(stderr, "gpgpusim: ERROR: Memory read failed for address 0x%llx (length=%zu)\n", (unsigned long long)addr, length);
+      abort();
     }
   }
   else {

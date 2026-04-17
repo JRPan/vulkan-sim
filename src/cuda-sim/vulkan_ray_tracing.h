@@ -442,6 +442,7 @@ public:
     static void callAnyHitShader(const ptx_instruction *pI, ptx_thread_info *thread, uint32_t shader_counter);
     static void setDescriptor(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type);
     static void* getDescriptorAddress(uint32_t setID, uint32_t binding);
+    static void* getDescriptorBySamplerViewIndex(uint32_t setID, uint32_t sampler_view_index, uint32_t stage);
 
     static void image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_LaunchIDEXT_X, uint32_t gl_LaunchIDEXT_Y, uint32_t gl_LaunchIDEXT_Z, uint32_t gl_LaunchsIDEXT_W, 
               float hitValue_X, float hitValue_Y, float hitValue_Z, float hitValue_W, const ptx_instruction *pI, ptx_thread_info *thread);
