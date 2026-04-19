@@ -2113,64 +2113,85 @@ void VulkanRayTracing::getTexture(struct DESCRIPTOR_STRUCT *desc,
     //     }
     // }
 #elif defined(MESA_USE_LVPIPE_DRIVER)
-    // printf("gpgpusim: getTexture not implemented for lavapipe.\n");
-    //
-    // printf("GIVEN DESC: %p\n", desc);
-
-    if (x < 0 || x > 1)
-        x -= std::floor(x);
-    if (y < 0 || y > 1)
-        y -= std::floor(y);
-
-    // printf("X: %f, Y: %f\n", x, y);
-
     struct lvp_descriptor d = *(struct lvp_descriptor*) desc;
-    const struct lvp_image *img = d.info.sampler_view->image;
-    uint32_t width = img->vk.extent.width;
-    uint32_t height = img->vk.extent.height;
-    void *i = img->pmem;
+    struct pipe_sampler_view *sv = d.info.sampler_view;
+    struct pipe_resource *texture = sv->texture;
+    const struct llvmpipe_resource *lpr = (const struct llvmpipe_resource *) texture;
+    enum pipe_format format = sv->format;
 
-    for (unsigned i = 0; i < lod; i++) {
-        width /= 2;
-        height /=2 ;
+    // Clamp LOD to available mip levels
+    unsigned base_level = sv->u.tex.first_level;
+    unsigned max_level = sv->u.tex.last_level;
+    unsigned mip_level = base_level + (unsigned)lod;
+    if (mip_level > max_level)
+        mip_level = max_level;
+
+    // Get dimensions at this mip level
+    uint32_t width = std::max(1u, (uint32_t)(texture->width0 >> mip_level));
+    uint32_t height = std::max(1u, (uint32_t)(texture->height0 >> mip_level));
+    unsigned row_stride = lpr->row_stride[mip_level];
+
+    // Bytes per pixel based on format
+    unsigned bpp;
+    bool is_srgb = false;
+    bool is_bgra = false;
+    switch (format) {
+      case PIPE_FORMAT_R8G8B8A8_SRGB:
+        bpp = 4; is_srgb = true; break;
+      case PIPE_FORMAT_B8G8R8A8_SRGB:
+        bpp = 4; is_srgb = true; is_bgra = true; break;
+      case PIPE_FORMAT_R8G8B8A8_UNORM:
+        bpp = 4; break;
+      case PIPE_FORMAT_B8G8R8A8_UNORM:
+        bpp = 4; is_bgra = true; break;
+      case PIPE_FORMAT_R8G8B8_UNORM:
+        bpp = 3; break;
+      case PIPE_FORMAT_R8G8B8_SRGB:
+        bpp = 3; is_srgb = true; break;
+      default:
+        printf("gpgpusim: WARNING: unhandled texture format %u, assuming RGBA8\n", format);
+        bpp = 4;
+        break;
     }
 
-    uint32_t x_int = std::floor(x * width);
-    uint32_t y_int = std::floor(y * height);
-    if(x_int >= width)
-        x_int -= width;
-    if(y_int >= height)
-        y_int -= height;
+    // UV wrapping (repeat mode)
+    x = x - std::floor(x);
+    y = y - std::floor(y);
 
-    void *c = i + (y_int * height + x_int) * 4;
+    // Nearest-neighbor sampling
+    uint32_t x_int = (uint32_t)(x * width);
+    uint32_t y_int = (uint32_t)(y * height);
+    if (x_int >= width) x_int = width - 1;
+    if (y_int >= height) y_int = height - 1;
+
+    // Read from texture data using mip offset and row stride
+    uint64_t texel_offset = lpr->mip_offsets[mip_level] + y_int * row_stride + x_int * bpp;
+    uint8_t *data = (uint8_t*)lpr->tex_data + texel_offset;
 
     ImageMemoryTransactionRecord transaction;
     transaction.type = ImageTransactionType::TEXTURE_LOAD;
-    transaction.address = c;
-    transaction.size = 4;
+    transaction.address = data;
+    transaction.size = bpp;
     transactions.push_back(transaction);
 
-    uint8_t *colors = (uint8_t*) c;
-    c0 = colors[0] / 255.0;
-    c1 = colors[1] / 255.0;
-    c2 = colors[2] / 255.0;
-    c3 = colors[3] / 255.0;
+    // Decode texel
+    uint8_t r, g, b, a;
+    if (is_bgra) {
+      b = data[0]; g = data[1]; r = data[2]; a = (bpp >= 4) ? data[3] : 255;
+    } else {
+      r = data[0]; g = data[1]; b = data[2]; a = (bpp >= 4) ? data[3] : 255;
+    }
 
-    struct pipe_resource *texture =d.info.sampler_view->texture;
-    const struct llvmpipe_resource *lpr = (const struct llvmpipe_resource *) texture;
-    assert(width * 4 == lpr->row_stride[(unsigned) lod]);
-    unsigned offset = lpr->mip_offsets[(unsigned) lod];
-    offset += (y_int * height + x_int) * 4;
-
-    unsigned rgba[4];
-    // Assuming the format is RGBA8
-    uint8_t *data = lpr->tex_data + offset;
-    c0 = SRGB_to_linearRGB(data[0] / 255.0);  // R
-    c1 = SRGB_to_linearRGB(data[1] / 255.0);  // G
-    c2 = SRGB_to_linearRGB(data[2] / 255.0);  // B
-    c3 = SRGB_to_linearRGB(data[3] / 255.0);  // A
-
-    // abort();
+    if (is_srgb) {
+      c0 = SRGB_to_linearRGB(r / 255.0f);
+      c1 = SRGB_to_linearRGB(g / 255.0f);
+      c2 = SRGB_to_linearRGB(b / 255.0f);
+    } else {
+      c0 = r / 255.0f;
+      c1 = g / 255.0f;
+      c2 = b / 255.0f;
+    }
+    c3 = a / 255.0f;  // Alpha is always linear
 #endif
 }
 
