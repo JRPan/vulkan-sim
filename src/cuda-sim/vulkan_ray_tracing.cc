@@ -3175,7 +3175,13 @@ void VulkanRayTracing::vkCmdDraw() {
   gpgpu_sim *m_gpu = context->get_device()->get_gpgpu();
   FILE *fp;
 
-  // Check draw limit from environment variable
+  // Check draw range from environment variables
+  char *skip_draws_str = getenv("GPGPUSIM_SKIP_DRAWS");
+  if (skip_draws_str && draw < (unsigned)atoi(skip_draws_str)) {
+    printf("gpgpusim: skipping draw %u (GPGPUSIM_SKIP_DRAWS=%s)\n", draw, skip_draws_str);
+    cleanup();
+    return;
+  }
   char *max_draws_str = getenv("GPGPUSIM_MAX_DRAWS");
   if (max_draws_str && draw >= (unsigned)atoi(max_draws_str)) {
     printf("gpgpusim: reached GPGPUSIM_MAX_DRAWS=%s, exiting after %u draws.\n", max_draws_str, draw);
@@ -3319,6 +3325,10 @@ void VulkanRayTracing::vkCmdDraw() {
   }
   printf("total pixel count: %u\n", (unsigned)VertexMeta->thread_info_pixel.size());
   thread_count = VertexMeta->thread_info_pixel.size();
+
+  // Dump debug FBO (rasterized geometry) before FS
+  dumpFBODebug();
+
   is_FS = true;
   if (thread_count == 0) {
     printf("gpgpusim: no fragments generated, skipping FS for draw %u\n", draw);
@@ -3950,6 +3960,51 @@ void VulkanRayTracing::generate_frag(unsigned batch_index) {
   }
 
   // printf("total frags collected - %u\n", VertexMeta->thread_info_pixel.size());
+}
+
+void VulkanRayTracing::dumpFBODebug() {
+  std::string mesa_root = getenv("MESA_ROOT");
+  FILE *fp;
+
+  uint8_t *out = new uint8_t[FBO->fbo_count];
+  for (unsigned i = 0; i < FBO->fbo_count; i += 4) {
+    out[i] = linearRGB_to_SRGB(FBO->fbo_debug[i]) * 255;
+    out[i + 1] = linearRGB_to_SRGB(FBO->fbo_debug[i + 1]) * 255;
+    out[i + 2] = linearRGB_to_SRGB(FBO->fbo_debug[i + 2]) * 255;
+    out[i + 3] = linearRGB_to_SRGB(FBO->fbo_debug[i + 3]) * 255;
+  }
+  std::string fbo_file =
+      mesa_root + "../fb/" + "fbo_debug_" + std::to_string(draw);
+  fp = fopen((fbo_file + ".bin").c_str(), "wb+");
+  fwrite(out, 1, FBO->fbo_size / 4, fp);
+  fclose(fp);
+  delete[] (out);
+  std::string fbo_cmd = "convert -depth 8 -size " + std::to_string(FBO->width) +
+                        "x" + std::to_string(FBO->height) +
+                        "+0 rgba:" + fbo_file + ".bin " + fbo_file + ".jpg";
+  system(fbo_cmd.c_str());
+  system(("rm " + fbo_file + ".bin").c_str());
+
+  unsigned char *depthout = new unsigned char[FBO->fbo_count / 4];
+  for (unsigned i = 0; i < FBO->fbo_count / 4; i++) {
+    if (VertexMeta->DepthcmpOp == VK_COMPARE_OP_GREATER) {
+      depthout[i] = FBO->depthout[i] * 255;
+    } else {
+      depthout[i] = (1.0f - FBO->depthout[i]) * 255;
+    }
+  }
+  std::string depth_file =
+      mesa_root + "../fb/" + "depth_out_" + std::to_string(draw);
+  fp = fopen((depth_file + ".bin").c_str(), "wb+");
+  fwrite(depthout, 1, FBO->fbo_size / 4 / 4, fp);
+  fclose(fp);
+  std::string depth_cmd =
+      "convert -depth 8 -size " + std::to_string(FBO->width) + "x" +
+      std::to_string(FBO->height) + "+0 gray:" + depth_file + ".bin " +
+      depth_file + ".jpg";
+  system(depth_cmd.c_str());
+  system(("rm " + depth_file + ".bin").c_str());
+  delete[] (depthout);
 }
 
 void VulkanRayTracing::dumpFBO() {

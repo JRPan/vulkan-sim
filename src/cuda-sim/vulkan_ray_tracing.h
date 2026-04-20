@@ -536,6 +536,7 @@ public:
     static void genLoD();
     static void cleanup();
     static void dumpFBO();
+    static void dumpFBODebug();
     static void pre_frag();
     static float linearRGB_to_SRGB(float s) {
       // assert(0 <= s && s <= 1);
